@@ -1,0 +1,10 @@
+{
+  "box_name": "hub",
+  "role": "hub",
+  "port": 8101,
+  "vllm_url": "",
+  "ollama_url": "",
+  "hub_url": "",
+  "sample_interval": 2,
+  "db_file": "hub.db"
+}

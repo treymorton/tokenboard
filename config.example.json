@@ -1,0 +1,10 @@
+{
+  "box_name": "",
+  "role": "box",
+  "port": 8100,
+  "vllm_url": "http://127.0.0.1:8000",
+  "ollama_url": "",
+  "hub_url": "",
+  "sample_interval": 2,
+  "db_file": "tokenboard.db"
+}

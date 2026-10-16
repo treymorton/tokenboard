@@ -1,0 +1,17 @@
+[Unit]
+Description=TokenBoard hub (aggregates all boxes, serves dashboard @HUB_PORT@)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=@ROOT@
+Environment=TOKENBOARD_CONFIG=@ROOT@/config-hub.json
+ExecStart=@PYTHON@ @ROOT@/tokenboard.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
