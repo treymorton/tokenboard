@@ -1,0 +1,36 @@
+{
+  "currency": "USD",
+  "note": "List API prices per 1M tokens, verified 2026-10-13 against vendor pages (claude.com/pricing, docs.x.ai/developers/pricing, cloud.google.com Vertex pricing) and openrouter.ai/api/v1/models. Gemini 3.1 Pro is preview-tier; Google's Vertex table implies a $4 output rate for global inference vs the $12 listed here — use $12 (higher) for a conservative savings figure. Prices exclude batch discounts, prompt-cache rates, and any local electricity/labor cost.",
+  "models": [
+    {
+      "name": "GPT-5.5",
+      "vendor": "OpenAI",
+      "input_per_m": 5.0,
+      "output_per_m": 30.0
+    },
+    {
+      "name": "Claude Opus 5.5",
+      "vendor": "Anthropic",
+      "input_per_m": 4.0,
+      "output_per_m": 20.0
+    },
+    {
+      "name": "Gemini 3.1 Pro",
+      "vendor": "Google",
+      "input_per_m": 2.0,
+      "output_per_m": 12.0
+    },
+    {
+      "name": "Grok 4.7",
+      "vendor": "xAI",
+      "input_per_m": 2.0,
+      "output_per_m": 6.0
+    },
+    {
+      "name": "GPT-4o",
+      "vendor": "OpenAI",
+      "input_per_m": 2.5,
+      "output_per_m": 10.0
+    }
+  ]
+}
