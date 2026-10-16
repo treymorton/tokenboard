@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TokenBoard — Local Compute Savings</title>
+<script src="/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0b0f14; --panel: #121821; --panel2: #0f141c;
+    --border: #1f2a38; --text: #e6edf5; --muted: #8b9bb0;
+    --green: #2dd4a7; --blue: #5aa9ff; --amber: #ffb454; --red: #ff7a7a;
+    --purple: #b48cff; --teal: #38d6c4;
+    font-size: 15px;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif; }
+  .wrap { max-width: 1280px; margin: 0 auto; padding: 24px 20px 60px; }
+  header { display: flex; justify-content: space-between; align-items: flex-end;
+    margin-bottom: 20px; flex-wrap: wrap; gap: 10px; }
+  h1 { margin: 0; font-size: 1.5rem; font-weight: 650; letter-spacing: .2px; }
+  h1 .dot { color: var(--green); }
+  .sub { color: var(--muted); font-size: .85rem; margin-top: 3px; }
+  .live-pill { display: inline-flex; align-items: center; gap: 7px;
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 999px; padding: 6px 14px; font-size: .8rem; color: var(--muted); }
+  .live-pill .led { width: 9px; height: 9px; border-radius: 50%;
+    background: var(--green); box-shadow: 0 0 8px var(--green); }
+  .live-pill.off .led { background: var(--red); box-shadow: 0 0 8px var(--red); }
+
+  .hero { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+  .hero-card { background: linear-gradient(160deg, #10231d 0%, var(--panel) 55%);
+    border: 1px solid #1d3a30; border-radius: 14px; padding: 22px 26px; }
+  .hero-label { color: var(--muted); font-size: .8rem; text-transform: uppercase;
+    letter-spacing: 1.4px; }
+  .hero-num { font-size: 3.1rem; font-weight: 700; line-height: 1.1; margin: 6px 0 2px;
+    font-variant-numeric: tabular-nums; }
+  .hero-sub { color: var(--muted); font-size: .9rem; font-variant-numeric: tabular-nums; }
+  .cost-card { background: linear-gradient(160deg, #132035 0%, var(--panel) 55%);
+    border: 1px solid #21324d; border-radius: 14px; padding: 22px 26px; display: flex;
+    flex-direction: column; justify-content: center; }
+  .cost-num { font-size: 2.6rem; font-weight: 700; color: var(--green);
+    font-variant-numeric: tabular-nums; margin: 4px 0; }
+  .cost-note { color: var(--muted); font-size: .82rem; line-height: 1.45; }
+
+  .hero2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+  .hero2 > div { padding: 16px 22px; }
+  .hero2 .h2-num { font-size: 2.1rem; }
+  .hero2 .h2-sub { font-size: .8rem; }
+  .h2-label { display: inline-flex; align-items: center; gap: 8px; }
+  .h2-sel { font-size: .72rem; color: var(--muted); background: #0c1117;
+    border: 1px solid var(--border); border-radius: 999px; padding: 2px 9px;
+    text-transform: none; letter-spacing: .3px; }
+  select.h2-sel { cursor: pointer; padding: 2px 6px; }
+  select.h2-sel option { background: #0c1117; color: var(--text); }
+
+  .grid { display: grid; gap: 16px; }
+  .g2 { grid-template-columns: 1fr 1fr; }
+  .g1 { grid-template-columns: 1fr; }
+  @media (max-width: 900px) { .grid, .hero, .hero2 { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--border);
+    border-radius: 14px; padding: 18px 20px; margin-bottom: 16px; }
+  .card h3 { margin: 0 0 4px; font-size: .95rem; font-weight: 600; }
+  .card .hint { color: var(--muted); font-size: .78rem; margin-bottom: 12px; }
+  .chart-box { position: relative; height: 260px; }
+  .chart-box.tall { height: 300px; }
+
+  .kpis { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; margin-bottom: 16px; }
+  @media (max-width: 900px) { .kpis { grid-template-columns: repeat(3, 1fr); } }
+  .kpi { background: var(--panel2); border: 1px solid var(--border);
+    border-radius: 10px; padding: 12px 14px; }
+  .kpi .l { color: var(--muted); font-size: .72rem; text-transform: uppercase;
+    letter-spacing: .8px; }
+  .kpi .v { font-size: 1.25rem; font-weight: 650; margin-top: 3px;
+    font-variant-numeric: tabular-nums; }
+
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { padding: 8px 10px; text-align: right; font-size: .85rem; }
+  th { color: var(--muted); font-weight: 500; border-bottom: 1px solid var(--border); }
+  td { border-bottom: 1px solid #161f2b; }
+  tr:last-child td { border-bottom: none; }
+  th:first-child, td:first-child { text-align: left; }
+  td .vendor { color: var(--muted); font-size: .74rem; }
+  .cost { color: var(--text); font-weight: 600; }
+  .saved { color: var(--green); font-weight: 700; font-size: 1.02rem; }
+
+  .boxrow { display: flex; justify-content: space-between; align-items: center;
+    padding: 7px 0; border-bottom: 1px solid #161f2b; font-size: .85rem; }
+  .boxrow:last-child { border-bottom: none; }
+  .boxrow .bname { font-weight: 600; }
+  .boxrow .bnum { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .boxrow .bsave { color: var(--green); font-weight: 650; }
+  .pill { display: inline-block; font-size: .68rem; padding: 2px 8px;
+    border-radius: 999px; border: 1px solid var(--border); color: var(--muted);
+    margin-left: 8px; }
+  .pill.on { color: var(--green); border-color: #1d3a30; }
+  footer { margin-top: 28px; color: var(--muted); font-size: .74rem; line-height: 1.6; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div id="jsError" style="display:none;background:#2a1515;border:1px solid #5a2626;color:#ffb4b4;
+    border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:.85rem"></div>
+  <header>
+    <div>
+      <h1>TokenBoard <span class="dot">●</span></h1>
+      <div class="sub" id="subtitle">local compute · live token activity &amp; frontier-cost savings</div>
+    </div>
+    <div class="live-pill" id="livePill"><span class="led"></span><span id="liveText">connecting…</span></div>
+  </header>
+
+  <div class="hero">
+    <div class="hero-card">
+      <div class="hero-label">Tokens served today (local)</div>
+      <div class="hero-num" id="heroTokens">—</div>
+      <div class="hero-sub" id="heroSub"></div>
+    </div>
+    <div class="cost-card">
+      <div class="hero-label">Frontier cost you're NOT paying (today)</div>
+      <div class="cost-num" id="heroCost">—</div>
+      <div class="cost-note" id="heroCostNote">cheapest of the reference frontier models below</div>
+    </div>
+  </div>
+
+  <div class="hero2">
+    <div class="hero-card" style="padding:16px 22px">
+      <div class="hero-label h2-label">Tokens served so far
+        <select id="rangeSel" class="h2-sel" title="Time frame for the 'So Far' totals">
+          <option value="all">all history</option>
+          <option value="today">today</option>
+          <option value="24h">last 24h</option>
+          <option value="yesterday">yesterday</option>
+          <option value="7d">last 7 days</option>
+          <option value="30d">last 30 days</option>
+        </select>
+      </div>
+      <div class="hero-num h2-num" id="soFarTokens">—</div>
+      <div class="hero-sub h2-sub" id="soFarSub"></div>
+    </div>
+    <div class="cost-card" style="padding:16px 22px">
+      <div class="hero-label">Frontier cost so far</div>
+      <div class="cost-num" style="font-size:2.1rem" id="soFarCost">—</div>
+      <div class="cost-note" id="soFarCostNote"></div>
+    </div>
+  </div>
+
+  <div class="kpis" id="kpis"></div>
+
+  <div class="grid g1">
+    <div class="card">
+      <h3>Cost comparison — today's token mix priced at frontier list rates</h3>
+      <div class="hint">All five reference models, side by side. “Saved” assumes the same workload on this local GB10.</div>
+      <div style="overflow-x:auto">
+      <table id="priceTable">
+        <thead><tr>
+          <th>Frontier model</th><th>Prompt /1M</th><th>Completion /1M</th>
+          <th>Today's cost</th><th>Local compute</th><th>Est. saved today</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid g1">
+    <div class="card">
+      <h3>Daily token totals (calendar days, server local time)</h3>
+      <div class="hint">Prompt (input) vs generated (output) tokens per day — bar chart.</div>
+      <div class="chart-box tall"><canvas id="daysChart"></canvas></div>
+    </div>
+  </div>
+
+  <div class="grid g2">
+    <div class="card">
+      <h3>Utilization — last 6 hours</h3>
+      <div class="hint">GPU &amp; CPU utilization through the day (line).</div>
+      <div class="chart-box"><canvas id="utilChart"></canvas></div>
+    </div>
+    <div class="card">
+      <h3>Memory — last 6 hours</h3>
+      <div class="hint">System memory used (GB) — GB10 unified memory (line).</div>
+      <div class="chart-box"><canvas id="memChart"></canvas></div>
+    </div>
+  </div>
+
+  <div class="grid g2">
+    <div class="card" id="boxListCard">
+      <h3>Boxes</h3>
+      <div class="hint" id="boxListHint"></div>
+      <div id="boxList"></div>
+    </div>
+    <div class="card">
+      <h3>Cumulative since first sample</h3>
+      <div class="hint">This box (or all boxes aggregated) — resets only when the database is wiped.</div>
+      <div class="kpis" style="grid-template-columns:repeat(3,1fr)" id="cumKpis"></div>
+    </div>
+  </div>
+
+  <footer>
+    Token counts from vLLM <code>/metrics</code> (authoritative counters; restart-safe via persisted
+    offsets). Daily totals are calendar days in the server's local timezone. Reference prices in
+    <code>prices.json</code> are current frontier list rates (verified 2026-10-13 against vendor
+    pages) — re-check before public use as list prices change; “saved” figures exclude any local
+    electricity/labor cost.
+  </footer>
+</div>
+
+<script>
+window.addEventListener("error", (e) => {
+  const el = document.getElementById("jsError");
+  if (el) {
+    el.style.display = "block";
+    el.textContent = "Dashboard script error: " + (e.message || "unknown");
+  }
+});
+window.addEventListener("unhandledrejection", (e) => {
+  const el = document.getElementById("jsError");
+  const reason = e.reason && (e.reason.message || e.reason.description) || String(e.reason);
+  if (el) {
+    el.style.display = "block";
+    el.textContent = "Dashboard async error: " + reason;
+  }
+});
+</script>
+<script>
+const $ = (id) => document.getElementById(id);
+const fmt = (n) => n == null ? "—" : n.toLocaleString("en-US");
+const money = (n) => n == null ? "—" : "$" + n.toLocaleString("en-US", {maximumFractionDigits: 2});
+let daysChart, utilChart, memChart;
+const boxParam = new URLSearchParams(location.search).get("box") ? `?box=${encodeURIComponent(new URLSearchParams(location.search).get("box"))}` : "";
+// Time frame for the "So Far" cards: a named preset resolved on the server
+// (local-timezone boundaries, matching the daily bars). The <select> drives it.
+let rangePreset = "all";
+function rangeQS() {
+  let q = `preset=${encodeURIComponent(rangePreset)}`;
+  const b = new URLSearchParams(location.search).get("box");
+  if (b) q += `&box=${encodeURIComponent(b)}`;
+  return `?${q}`;
+}
+document.getElementById("rangeSel").addEventListener("change", (e) => {
+  rangePreset = e.target.value;
+  refresh();
+});
+
+Chart.defaults.color = "#8b9bb0";
+Chart.defaults.borderColor = "#1f2a38";
+Chart.defaults.font.family = '"Segoe UI", system-ui, sans-serif';
+
+function chartOpts(yTitle, extra = {}) {
+  return {
+    responsive: true, maintainAspectRatio: false, animation: false,
+    interaction: { mode: "index", intersect: false },
+    plugins: {
+      legend: { labels: { boxWidth: 12, boxHeight: 12, usePointStyle: true } },
+      tooltip: { backgroundColor: "#0f141c", borderColor: "#1f2a38", borderWidth: 1 }
+    },
+    scales: {
+      x: { grid: { display: false }, ticks: { maxTicksLimit: 8 } },
+      y: { beginAtZero: true, title: { display: !!yTitle, text: yTitle || "" }, ...extra.y }
+    },
+    ...extra
+  };
+}
+function timeLabels(tsArr) {
+  return tsArr.map(t => new Date(t * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}));
+}
+
+function kpi(el, label, value, color) {
+  const d = document.createElement("div");
+  d.className = "kpi";
+  d.innerHTML = `<div class="l">${label}</div><div class="v" style="${color ? `color:${color}` : ""}">${value}</div>`;
+  el.appendChild(d);
+}
+
+// Guards against out-of-order refreshes: a response that returns after a
+// newer refresh started is dropped (the select + periodic timer overlap).
+let refreshSeq = 0;
+
+async function refresh() {
+  const seq = ++refreshSeq;
+  let st, days, series, boxes, range;
+  try {
+    const [aS, aD, aT, aB, aR] = await Promise.all([
+      fetch("/api/state" + boxParam).then(r => r.json()),
+      fetch("/api/days" + boxParam).then(r => r.json()),
+      fetch("/api/timeseries" + boxParam).then(r => r.json()),
+      fetch("/api/boxes").then(r => r.json()),
+      fetch("/api/range" + rangeQS()).then(r => r.json()),
+    ]);
+    if (seq !== refreshSeq) return; // a newer refresh superseded this one
+    st = aS; days = aD.days; series = aT; boxes = aB.boxes; range = aR;
+  } catch (e) {
+    if (seq !== refreshSeq) return;
+    $("livePill").classList.add("off");
+    $("liveText").textContent = "disconnected";
+    return;
+  }
+  const offline = st.state === "empty";
+  $("livePill").classList.toggle("off", offline);
+  $("liveText").textContent = offline ? "awaiting data"
+    : `live · ${new Date().toLocaleTimeString([], {hour:"2-digit",minute:"2-digit",second:"2-digit"})}`;
+
+  if (offline) return;
+  $("subtitle").textContent = `${st.box} · ${st.role} · source: ${st.source} · today's tokens served locally`;
+
+  // hero
+  $("heroTokens").textContent = fmt(st.today.total);
+  $("heroSub").textContent = `${fmt(st.today.prompt)} prompt + ${fmt(st.today.gen)} generated · ${st.live.tokens_per_sec ?? "—"} tok/s`;
+  const costs = Object.values(st.today.cost_by_model || {});
+  $("heroCost").textContent = costs.length ? money(Math.max(...costs)) : "—";
+  $("heroCostNote").textContent =
+    `if today's mix ran on the priciest reference model · local cost: ~$0 API spend`;
+
+  // so far (historical / selected time frame)
+  if (range && range.total != null) {
+    $("soFarTokens").textContent = fmt(range.total);
+    $("soFarSub").textContent =
+      `${fmt(range.prompt)} prompt + ${fmt(range.gen)} generated · ${fmt(range.requests)} requests`;
+    const rcosts = Object.values(range.cost_by_model || {});
+    $("soFarCost").textContent = rcosts.length ? money(Math.max(...rcosts)) : "—";
+    const label = range.range
+      ? `${range.range.from} → ${range.range.to}`
+      : "all history";
+    $("soFarCostNote").textContent =
+      `across ${label} · priciest reference model · local cost: ~$0 API spend`;
+  }
+
+  // KPIs
+  const L = st.live;
+  $("kpis").innerHTML = "";
+  kpi($("kpis"), "GPU util", L.gpu_pct == null ? "—" : L.gpu_pct + "%", "#5aa9ff");
+  kpi($("kpis"), "GPU power", L.gpu_power_w == null ? "—" : L.gpu_power_w + " W", "#ffb454");
+  kpi($("kpis"), "CPU util", L.cpu_pct == null ? "—" : L.cpu_pct + "%", "#b48cff");
+  kpi($("kpis"), "Memory", L.mem_used_gb == null ? "—" : L.mem_used_gb + " / " + L.mem_total_gb + " GB", "#38d6c4");
+  kpi($("kpis"), "Requests today", fmt(st.today.requests ?? "—"), "#8b9bb0");
+  kpi($("kpis"), "KV cache", L.kv_cache_pct == null ? "—" : L.kv_cache_pct.toFixed(0) + "%", "#2dd4a7");
+
+  // price table
+  const models = (st.prices || {}).models || [];
+  const tbody = $("priceTable").tBodies[0];
+  tbody.innerHTML = "";
+  const maxCost = Math.max(...models.map(m => st.today.cost_by_model[m.name] || 0), 0);
+  models.forEach(m => {
+    const c = st.today.cost_by_model[m.name] ?? 0;
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      `<td>${m.name} <span class="vendor">${m.vendor}</span></td>
+       <td>$${m.input_per_m}</td><td>$${m.output_per_m}</td>
+       <td class="cost">${money(c)}</td>
+       <td style="color:var(--green);font-weight:650">$0.00</td>
+       <td class="saved">${money(c)}</td>`;
+    if (c === maxCost && c > 0) tr.style.background = "#0f1a2a";
+    tbody.appendChild(tr);
+  });
+
+  // daily bars
+  const dLabels = days.map(d => d.date.slice(5));
+  const mk = (col) => ({
+    data: days.map(d => d[col]),
+    backgroundColor: col === "prompt" ? "rgba(90,169,255,.85)" : "rgba(45,212,167,.85)",
+    borderRadius: 4, barPercentage: .62, categoryPercentage: .7
+  });
+  if (daysChart) daysChart.destroy();
+  const dayLegend = {
+    labels: {
+      boxWidth: 12, boxHeight: 12, usePointStyle: true,
+      generateLabels: () => [
+        { text: "Prompt (input)", fillStyle: "rgba(90,169,255,.85)", strokeStyle: "transparent", pointStyle: "rect", fontColor: "#8b9bb0" },
+        { text: "Generated (output)", fillStyle: "rgba(45,212,167,.85)", strokeStyle: "transparent", pointStyle: "rect", fontColor: "#8b9bb0" }
+      ]
+    }
+  };
+  daysChart = new Chart($("daysChart"), {
+    type: "bar",
+    data: { labels: dLabels, datasets: [mk("prompt"), mk("gen")] },
+    options: {
+      ...chartOpts("tokens", {
+        scales: {
+          x: { stacked: true, grid: { display: false } },
+          y: { stacked: true, beginAtZero: true, title: { display: true, text: "tokens" } }
+        }
+      }),
+      plugins: { legend: dayLegend }
+    }
+  });
+
+  // line charts
+  const xl = timeLabels(series.ts);
+  const line = (label, data, color, dashed = false) => ({
+    label, data, borderColor: color, backgroundColor: color + "22",
+    fill: true, tension: .3, pointRadius: 0, borderWidth: 2,
+    borderDash: dashed ? [5, 4] : [], spanGaps: true
+  });
+  if (utilChart) utilChart.destroy();
+  utilChart = new Chart($("utilChart"), {
+    type: "line",
+    data: { labels: xl, datasets: [
+      line("GPU util %", series.gpu_pct, "#5aa9ff"),
+      line("CPU util %", series.cpu, "#b48cff")
+    ]},
+    options: chartOpts("%", { scales: {
+      x: { grid: { display: false }, ticks: { maxTicksLimit: 8 } },
+      y: { beginAtZero: true, max: 100, title: { display: true, text: "utilization %" } }
+    }})
+  });
+  if (memChart) memChart.destroy();
+  memChart = new Chart($("memChart"), {
+    type: "line",
+    data: { labels: xl, datasets: [
+      line("Memory used (GB)", series.mem_gb, "#38d6c4"),
+      line("GPU power (W)", series.gpu_power_w, "#ffb454", true)
+    ]},
+    options: chartOpts("GB / W", { scales: {
+      x: { grid: { display: false }, ticks: { maxTicksLimit: 8 } },
+      y: { beginAtZero: true, title: { display: true, text: "GB · W" } }
+    }})
+  });
+
+  // boxes
+  $("boxList").innerHTML = "";
+  $("boxListHint").textContent = st.role === "hub"
+    ? `${boxes.length} box(es) registered — aggregate view` : "per-box totals";
+  boxes.forEach(b => {
+    const total = (b.prompt || 0) + (b.gen || 0);
+    const online = (Date.now() / 1000 - b.last_seen) < 120;
+    const div = document.createElement("div");
+    div.className = "boxrow";
+    div.innerHTML = `<span class="bname">${b.name}<span class="pill ${online ? "on" : ""}">${online ? "online" : "offline"}</span></span>
+      <span><span class="bnum">${fmt(total)} tokens · ${fmt(b.prompt)} in / ${fmt(b.gen)} out</span></span>`;
+    $("boxList").appendChild(div);
+  });
+
+  // cumulative
+  $("cumKpis").innerHTML = "";
+  kpi($("cumKpis"), "Prompt tokens", fmt(st.cumulative.prompt), "#5aa9ff");
+  kpi($("cumKpis"), "Generated tokens", fmt(st.cumulative.gen), "#2dd4a7");
+  kpi($("cumKpis"), "Requests", fmt(st.cumulative.requests), "#8b9bb0");
+}
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>
