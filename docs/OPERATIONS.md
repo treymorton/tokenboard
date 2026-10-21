@@ -7,7 +7,11 @@ For the generic, new-user documentation see the main README.
 
 - Box name: `gb10-1` (config.json), role box, port 8100
 - Hub: same machine, `config-hub.json`, port 8101
-- vLLM: Qwen3.8-27B (NVFP4) in a Docker container, `--solo` mode, port 8000
+- Model backend **since 2026-10-21**: llama.cpp (`llama-server`, Hermes-
+  spawned, ephemeral port) serving Qwen3.8-Flash-Next IQ4_XS + MTP draft.
+  TokenBoard counts it via llama auto-discovery — no config needed.
+- Model backend until 2026-10-15: vLLM Qwen3.8-27B (NVFP4) in Docker,
+  `--solo` mode, port 8000 (see startup below; kept for reference)
 - Deployed 2026-10-12; running as user systemd services since 2026-10-13
 
 ## vLLM startup (manual — not a service)
@@ -72,6 +76,37 @@ explicit `conn.commit()` (WAL mode does not auto-commit).
 **Outcome:** this was also a successful live validation of the reboot story —
 systemd services came up on their own, the 4.7 h vLLM gap shows in the GPU
 chart, and counters continued from 27.1M instead of 0.
+
+### 2026-10-21 — llama.cpp token source added; vLLM→llama switch re-seed
+
+The box's model moved from vLLM (dead since 10-15 22:11, cumulative
+37,474,052 prompt / 425,572 gen / 413 req) to Hermes-served llama.cpp
+(Qwen3.8-Flash-Next, `llama-server` on an ephemeral port). The vLLM-only
+sampler counted nothing after the switch; llama support with /proc port
+auto-discovery and source-aware re-baselining was added (see README).
+
+Re-seed used after the switch (additive semantics — correct only because
+the two engines never overlapped and the llama server started after
+midnight, so its whole raw counter belongs to "today"):
+
+```python
+import sqlite3
+c = sqlite3.connect('tokenboard.db')   # STOP the service first
+for k, v in [('offset_prompt', 37474052), ('offset_gen', 425572),
+             ('offset_req', 413)]:     # vLLM-era true totals, fake-test bleed excluded
+    c.execute("INSERT INTO meta(key,value) VALUES(?,?) "
+              "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (k, str(v)))
+c.commit()
+# systemctl --user restart tokenboard-box  (reloads offsets)
+# verify: today == llama raw (prompt_tokens_total + prompt_tokens_cached_total
+#         + tokens_predicted_total from /metrics); all == vLLM-era + llama raw
+```
+
+**Test-bleed warning:** during the same window a test fixture served a fake
+vLLM `/metrics` on :8000 for ~40 s; the then-running vLLM-only sampler
+ingested it (~5k phantom tokens) before the re-seed wiped it out. Test
+backends must never bind ports the live sampler polls — stop
+`tokenboard-box` first, or use a port nothing probes.
 
 ## Tradeshow checklist
 

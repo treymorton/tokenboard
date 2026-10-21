@@ -3,7 +3,7 @@
 **Local inference, quantified.** TokenBoard runs on the box serving your local
 model (GB10, DGX Spark, or any Linux box with vLLM), counts every token the
 model serves, and shows live what that activity would have cost on frontier
-APIs - so at the end of a tradeshow day you can say:
+APIs — so at the end of a tradeshow day you can say:
 
 > *"We served 23M tokens today, locally, on this box. The same workload on
 > the frontier API would have cost $X."*
@@ -21,12 +21,15 @@ git clone https://github.com/treymorton/tokenboard tokenboard && cd tokenboard
 ## Requirements
 
 - **Linux** (aarch64 or x86_64; built and tested on NVIDIA GB10)
-- **Python 3.10+** - that's it. TokenBoard is stdlib-only; `install.sh`
+- **Python 3.10+** — that's it. TokenBoard is stdlib-only; `install.sh`
   installs nothing and needs no root. Chart.js is vendored, so the dashboard
   works fully offline.
-- **vLLM serving a local model** (any model, any port) - the prerequisite.
-  TokenBoard reads vLLM's cumulative Prometheus counters, which are exact:
-  what the API would bill.
+- **A local inference server: vLLM or llama.cpp** (llama-server) — the
+  prerequisite. TokenBoard reads the server's cumulative Prometheus
+  counters, which are exact: what the API would bill. vLLM is preferred
+  when both are up; llama-server is auto-discovered on any local port
+  (its ephemeral port doesn't need configuring). Ollama is supported for
+  model-presence display.
 - Internet is needed **only** for the optional price refresh at install time;
   a bundled price snapshot is used if the box is offline.
 
@@ -39,7 +42,7 @@ git clone https://github.com/treymorton/tokenboard tokenboard && cd tokenboard
 - **Cost comparison table:** all five frontier flagships side by side, with
   today's estimated savings per model
 - **Daily bar chart:** prompt vs generated tokens per calendar day
-  (server local time - set the box's timezone to the venue's before a show)
+  (server local time — set the box's timezone to the venue's before a show)
 - **Line charts:** GPU/CPU utilization and memory/power, last 6 h
 - **Boxes panel:** per-box online status + cumulative totals (hub mode)
 
@@ -47,15 +50,16 @@ git clone https://github.com/treymorton/tokenboard tokenboard && cd tokenboard
 
 1. checks Python ≥ 3.10
 2. probes `127.0.0.1:8000` / `:8001` for a vLLM `/metrics` endpoint
-   (override with `--vllm-url`); if none is found it still installs -
-   TokenBoard samples GPU/CPU/memory immediately and starts counting tokens
-   the moment vLLM comes up
+   (override with `--vllm-url`); if none is found it still installs —
+   TokenBoard samples GPU/CPU/memory immediately and starts counting
+   tokens the moment vLLM **or** a llama-server (any port, auto-found
+   via /proc) comes up
 3. writes `config.json` from `config.example.json` (never clobbers an
    existing one); `box_name` defaults to the hostname
 4. refreshes `prices.json` from OpenRouter's public API (no key); on failure
    keeps the bundled snapshot
 5. installs and starts user systemd services (auto-start on boot,
-   `Restart=always`) - or `nohup` with `--no-systemd`
+   `Restart=always`) — or `nohup` with `--no-systemd`
 6. health-checks the dashboard and prints the URLs (localhost + LAN IP)
 
 ```
@@ -80,23 +84,39 @@ git clone https://github.com/treymorton/tokenboard tokenboard && cd tokenboard
 ## How token counting works (and why the numbers are exact)
 
 vLLM exposes cumulative Prometheus counters: `prompt_tokens_total`,
-`generation_tokens_total`, `request_success_total`. TokenBoard samples them
-every 2 s and stores the running cumulative value in SQLite.
+`generation_tokens_total`, `request_success_total`. llama.cpp
+(llama-server) exposes equivalent ones (`llamacpp:prompt_tokens_total` +
+`prompt_tokens_cached_total`, `tokens_predicted_total`). TokenBoard
+samples them every 2 s and stores the running cumulative value in SQLite.
 
-- **Restart-safe:** if vLLM restarts and the counter drops, the sampler
-  detects the regression and adds the last-seen value as a **persisted
-  offset**, so the cumulative series stays monotonic - no lost or
-  double-counted tokens. Verified across a real machine reboot + vLLM
-  restart (see `docs/OPERATIONS.md`).
-- **Box restart-safe:** offsets and last-seen counters live in the `meta`
-  table of the SQLite DB, so a TokenBoard restart mid-stream is seamless.
-- **Daily totals** = (box's last cumulative within the day) - (box's last
+- **Engine auto-detection, vLLM first:** each sample tries vLLM at
+  `vllm_url`, then Ollama (status only, if configured), then
+  auto-discovers any local llama-server LISTEN socket via /proc (its
+  port is ephemeral, e.g. under Hermes). Multiple llama-servers are
+  summed. Pin an endpoint with `llama_url` for llama in Docker (other
+  net namespaces are invisible to /proc discovery).
+- **Restart-safe:** if the backend restarts and its counter drops, the
+  sampler detects the regression and re-baselines a **persisted offset**
+  so the cumulative series stays monotonic — no lost or double-counted
+  tokens. The re-baseline is source-aware: a vLLM ↔ llama engine switch
+  continues the cumulative seamlessly (a brief vLLM appearance while
+  llama keeps running cannot double-count). Verified across a real
+  machine reboot + vLLM restart (see `docs/OPERATIONS.md`) and a live
+  vLLM → llama.cpp switch.
+- **Box restart-safe:** offsets, last-seen counters, and the active
+  source live in the `meta` table of the SQLite DB, so a TokenBoard
+  restart mid-stream is seamless.
+- **Daily totals** = (box's last cumulative within the day) − (box's last
   cumulative before the day), per box, summed across boxes, in the server's
   local timezone.
-- **One caveat for fresh boxes:** a box that starts *mid-stream* (vLLM
+- **One caveat for fresh boxes:** a box that starts *mid-stream* (backend
   already running) attributes the counter's existing value to its first day.
-  Start TokenBoard when vLLM starts for clean day boundaries.
-- Thinking tokens (e.g. Qwen3 reasoning) count as generated tokens - they
+  Start TokenBoard when the backend starts for clean day boundaries.
+  The mirror case — TokenBoard already running when a *new engine* is
+  adopted — continues at the old total, so the new engine's pre-switch
+  tokens land in neither day nor growth; re-seed `meta` to re-attribute
+  them (recipe in `docs/OPERATIONS.md`).
+- Thinking tokens (e.g. Qwen3 reasoning) count as generated tokens — they
   are real output an API would bill.
 
 ## Configuration
@@ -108,8 +128,9 @@ every 2 s and stores the running cumulative value in SQLite.
 | `box_name` | identity for aggregation; empty string = hostname |
 | `role` | `box` (sample + serve) or `hub` (ingest + aggregate) |
 | `port` | dashboard port |
-| `vllm_url` | local vLLM base URL - the token source |
-| `ollama_url` | fallback: Ollama status only (no counters - see Limitations) |
+| `vllm_url` | local vLLM base URL — preferred token source |
+| `ollama_url` | fallback: Ollama status only (no counters — see Limitations) |
+| `llama_url` | pin a llama-server endpoint (string or list); empty = auto-discover via /proc; set it when llama runs in Docker |
 | `hub_url` | hub address for boxes to push to (`""` = standalone) |
 | `sample_interval` | seconds between samples (default 2) |
 | `db_file` | SQLite file name (default `tokenboard.db`) |
@@ -119,7 +140,7 @@ how the hub uses `config-hub.json`).
 
 ## Multi-box (hub mode)
 
-For a tradeshow with several GB10s: run one hub (e.g. on the booth laptop -
+For a tradeshow with several GB10s: run one hub (e.g. on the booth laptop —
 it has no vLLM and samples nothing) and point every box at it.
 
 ```
@@ -147,13 +168,13 @@ aggregation.
   dashboard's price table).
 - **Later:** `python3 scripts/refresh_prices.py` (or `curl -X POST
   localhost:8100/api/prices --data @prices.json`). The dashboard reads the
-  file per request - no restart.
+  file per request — no restart.
 - **Custom comparison set:** edit the `MODELS` list at the top of
   `scripts/refresh_prices.py`.
 - Selection is conservative: `:batch` half-price variants excluded, preview
   tiers and ambiguity resolve to the *higher* rate, and every such choice is
   disclosed in the file's `note`. OpenRouter is a third-party relay (vendor
-  pages block automated fetches) - re-verify against vendor pages before
+  pages block automated fetches) — re-verify against vendor pages before
   publishing dollar figures.
 
 ## Autostart & operations
@@ -201,12 +222,17 @@ docs/OPERATIONS.md     ops notes from the field
 ## Limitations / knowns
 
 - **Ollama / LM Studio:** neither exposes cumulative token counters over
-  HTTP - utilization is tracked, token counts show "no token source".
-  Exact counts from non-vLLM backends need a thin counting proxy (v2).
+  HTTP — utilization is tracked, token counts show "no token source".
+  (llama.cpp is fully supported — it does expose counters — see How
+  token counting works. A thin counting proxy for Ollama is a v2 idea.)
+- **llama.cpp request counts:** current llama.cpp builds expose no
+  completed-requests counter, so the requests KPI reads 0 under llama;
+  token totals are unaffected (a `requests_completed_total` counter is
+  used automatically if a future build adds it).
 - **GB10 memory quirk:** `nvidia-smi --query-gpu=memory.used` reports
-  `[N/A]` (unified memory) - memory is reported from `/proc/meminfo`;
+  `[N/A]` (unified memory) — memory is reported from `/proc/meminfo`;
   GPU util + power work normally.
-- **Costs are list-price estimates** (see Frontier prices) - they exclude
+- **Costs are list-price estimates** (see Frontier prices) — they exclude
   local electricity and labor.
 - **Timezone:** daily boundaries follow the server's local timezone; set it
   to the venue's timezone before a show.

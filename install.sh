@@ -75,7 +75,9 @@ if [ -n "$VLLM_URL" ]; then
 else
   warn "no vLLM /metrics endpoint found on :8000/:8001 (or --vllm-url given)"
   warn "continuing anyway — TokenBoard samples GPU/CPU/memory now and starts"
-  warn "counting tokens automatically the moment vLLM comes up."
+  warn "counting tokens automatically the moment vLLM or llama-server comes up"
+  warn "(llama-server is auto-discovered on any local port via /proc; pin one"
+  warn " with llama_url in config.json if it runs inside Docker)."
   VLLM_URL="http://127.0.0.1:8000"
 fi
 

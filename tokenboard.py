@@ -56,12 +56,18 @@ ROLE = CONFIG.get("role", "box")
 PORT = int(CONFIG.get("port", 8100))
 VLLM_URL = (CONFIG.get("vllm_url") or "http://127.0.0.1:8000").rstrip("/")
 OLLAMA_URL = (CONFIG.get("ollama_url") or "").rstrip("/")
+_llama_cfg = CONFIG.get("llama_url") or ""
+if isinstance(_llama_cfg, str):
+    _llama_cfg = [_llama_cfg] if _llama_cfg.strip() else []
+# explicit llama endpoints; when empty the sampler auto-discovers llama-server
+LLAMA_PINS = [str(u).rstrip("/") for u in _llama_cfg if str(u).strip()]
 HUB_URL = (CONFIG.get("hub_url") or "").rstrip("/")
 SAMPLE_INTERVAL = int(CONFIG.get("sample_interval", 2))
-TOKEN_SOURCE = "vllm" if VLLM_URL else ("ollama" if OLLAMA_URL else "none")
+# updated live by the sampler each cycle ("vllm" | "ollama" | "llama" | "none")
+TOKEN_SOURCE = "none"
 
 METRIC_RE = re.compile(
-    r"^(?P<name>vllm:[a-zA-Z0-9_:]+)(?:\{(?P<labels>[^}]*)\})?\s+(?P<value>[\d.eE+-]+)$"
+    r"^(?P<name>(?:vllm|llamacpp):[a-zA-Z0-9_:]+)(?:\{(?P<labels>[^}]*)\})?\s+(?P<value>[\d.eE+-]+)$"
 )
 LABEL_RE = re.compile(r'(\w+)="([^"]*)"')
 
@@ -99,6 +105,52 @@ def first_value(metrics, name):
     if not series:
         return None
     return series[0][1]
+
+
+def discover_llama_urls():
+    """Base URLs of every LISTEN socket owned by a llama-server process.
+
+    Hermes/llama.cpp launch llama-server on ephemeral ports, so we find it
+    the way a sysadmin would: /proc comm -> socket fds -> /proc/net/tcp[6]
+    LISTEN rows. Stdlib-only, Linux. Docker-external llama instances need
+    an explicit llama_url (different net = invisible here).
+    """
+    sock_inodes = set()
+    try:
+        pids = [p for p in os.listdir("/proc") if p.isdigit()]
+    except OSError:
+        return []
+    for pid in pids:
+        try:
+            with open(f"/proc/{pid}/comm") as f:
+                if f.read().strip() != "llama-server":
+                    continue
+            for fd in os.listdir(f"/proc/{pid}/fd"):
+                try:
+                    link = os.readlink(f"/proc/{pid}/fd/{fd}")
+                except OSError:
+                    continue
+                if link.startswith("socket:["):
+                    sock_inodes.add(link[8:-1])
+        except OSError:
+            continue
+    if not sock_inodes:
+        return []
+    urls = set()
+    for net in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            with open(net) as f:
+                next(f, None)  # header
+                for line in f:
+                    parts = line.split()
+                    if len(parts) < 10 or parts[3] != "0A":  # 0A = LISTEN
+                        continue
+                    if parts[9] not in sock_inodes:
+                        continue
+                    urls.add(f"http://127.0.0.1:{int(parts[1].rsplit(':', 1)[1], 16)}")
+        except OSError:
+            continue
+    return sorted(urls, key=lambda u: int(u.rsplit(":", 1)[1]))
 
 
 # ---------------------------------------------------------------- db
@@ -163,6 +215,8 @@ class Sampler(threading.Thread):
         self.offset_prompt = 0
         self.offset_gen = 0
         self.offset_req = 0
+        self.llama_urls = list(LLAMA_PINS) if LLAMA_PINS else None
+        self.llama_next_scan = 0.0
         self._load_offsets()
 
     def _load_offsets(self):
@@ -198,6 +252,52 @@ class Sampler(threading.Thread):
         return (int(p), int(g), int(r),
                 int(running) if running is not None else None,
                 (kv * 100) if kv is not None else None)
+
+    def _llama_counters(self):
+        """Return (prompt, gen, requests, req_running, kv_pct) summed across
+        every llama-server exposing counters, or None if none respond.
+
+        requests is None when the llama.cpp build lacks a completed-requests
+        counter (the dashboard shows 0 requests; token totals unaffected).
+        Endpoints are auto-discovered via /proc unless pinned in config;
+        ports are ephemeral so a failed fetch forces a rescan.
+        """
+        if self.llama_urls is None or time.time() >= self.llama_next_scan:
+            self.llama_urls = discover_llama_urls() if not LLAMA_PINS else LLAMA_PINS
+            self.llama_next_scan = time.time() + 30.0
+        prompt = gen = 0
+        reqs = 0.0
+        have_reqs = False
+        running = None
+        found = False
+        for url in self.llama_urls:
+            try:
+                m = parse_prom(http_get(f"{url}/metrics", timeout=5))
+            except Exception:
+                self.llama_next_scan = 0.0  # endpoint vanished: rescan next cycle
+                continue
+            p = first_value(m, "llamacpp:prompt_tokens_total")
+            g = first_value(m, "llamacpp:tokens_predicted_total")
+            if p is None or g is None:
+                continue  # up but not a readable metrics source (e.g. key-guarded)
+            found = True
+            # vLLM's prompt_tokens_total includes prefix-cache hits; llama.cpp
+            # counts cached prompt tokens separately, so add them back for
+            # equivalent "prompt tokens processed" semantics.
+            prompt += int(p + (first_value(m, "llamacpp:prompt_tokens_cached_total") or 0))
+            gen += int(g)
+            rc = first_value(m, "llamacpp:requests_completed_total")
+            if rc is not None:
+                reqs += rc
+                have_reqs = True
+            run = first_value(m, "llamacpp:requests_processing")
+            if run is None:
+                run = first_value(m, "llamacpp:requests_active")
+            if run is not None:
+                running = (running or 0) + int(run)
+        if not found:
+            return None
+        return (prompt, gen, int(reqs) if have_reqs else None, running, None)
 
     def _ollama_status(self):
         try:
@@ -254,50 +354,84 @@ class Sampler(threading.Thread):
             pass
         return None, None
 
+    def _commit_raw(self, src, raw_p, raw_g, raw_r):
+        """Apply reset-aware offsets to raw backend counters; returns
+        (prompt, gen, requests). raw_r may be None for backends without a
+        request counter.
+
+        Re-baseline fires on a counter reset OR an engine switch (vLLM <->
+        llama): the offset is adjusted so the stored cumulative continues
+        seamlessly from its last value. Source-awareness matters: with a
+        naive fold (offset += last_raw), a brief vLLM appearance while the
+        llama counters keep running would double-count the llama era on the
+        way back. raw falling below last_raw still fires it for same-engine
+        restarts; a fresh llama server (small raw) is handled identically.
+        """
+        conn = db()
+        try:
+            last = meta_get(conn, "last_raw_prompt")
+            if last is not None and (src != meta_get(conn, "source") or raw_p < int(last)):
+                self.offset_prompt += int(last) - raw_p
+                self.offset_gen += int(meta_get(conn, "last_raw_gen") or 0) - raw_g
+                if raw_r is not None:
+                    self.offset_req += int(meta_get(conn, "last_raw_req") or 0) - raw_r
+            prompt = raw_p + self.offset_prompt
+            gen = raw_g + self.offset_gen
+            requests = raw_r + self.offset_req if raw_r is not None else None
+            self._persist_offsets(conn)
+            meta_set(conn, "source", src)
+            meta_set(conn, "last_raw_prompt", raw_p)
+            meta_set(conn, "last_raw_gen", raw_g)
+            if raw_r is not None:
+                meta_set(conn, "last_raw_req", raw_r)
+            conn.commit()  # REQUIRED: uncommitted meta writes are rolled back
+            # on close, which silently defeats reset detection after a restart
+            return prompt, gen, requests
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
     def sample(self):
+        global TOKEN_SOURCE
         ts = int(time.time())
         cpu = self._cpu_pct()
         mem_used, mem_total = self._mem_gb()
         gpu_pct, gpu_power = self._gpu()
         prompt = gen = requests = None
         running = kv = None
-        ollama_models = None
+        c = None
+        src = "none"
 
-        if TOKEN_SOURCE == "vllm":
+        if LLAMA_PINS:
+            c = self._llama_counters()
+            if c:
+                src = "llama"
+        else:
             c = self._vllm_counters()
             if c:
-                raw_p, raw_g, raw_r, running, kv = c
-                # reset detection: raw counter fell below last stored raw
-                conn = db()
-                try:
-                    last = meta_get(conn, "last_raw_prompt")
-                    if last is not None and raw_p < int(last):
-                        self.offset_prompt += int(last)
-                        self.offset_gen += int(meta_get(conn, "last_raw_gen") or 0)
-                        self.offset_req += int(meta_get(conn, "last_raw_req") or 0)
-                    prompt = raw_p + self.offset_prompt
-                    gen = raw_g + self.offset_gen
-                    requests = raw_r + self.offset_req
-                    self._persist_offsets(conn)
-                    meta_set(conn, "last_raw_prompt", raw_p)
-                    meta_set(conn, "last_raw_gen", raw_g)
-                    meta_set(conn, "last_raw_req", raw_r)
-                    conn.commit()  # REQUIRED: uncommitted meta writes are rolled back on close,
-                    # which silently defeats reset detection after a vLLM restart
-                except Exception:
-                    conn.rollback()
-                    raise
-                finally:
-                    conn.close()
-        elif TOKEN_SOURCE == "ollama":
-            ollama_models = self._ollama_status()
-            if ollama_models is not None:
-                conn = db()
-                try:
-                    meta_set(conn, "ollama_models", ",".join(ollama_models))
-                    conn.commit()
-                finally:
-                    conn.close()
+                src = "vllm"
+        if c is None and not LLAMA_PINS:
+            # vLLM not answering: Ollama status if configured, else llama.cpp
+            if OLLAMA_URL:
+                ollama_models = self._ollama_status()
+                if ollama_models is not None:
+                    src = "ollama"
+                    conn = db()
+                    try:
+                        meta_set(conn, "ollama_models", ",".join(ollama_models))
+                        conn.commit()
+                    finally:
+                        conn.close()
+            if src == "none":
+                c = self._llama_counters()
+                if c:
+                    src = "llama"
+        if c:
+            raw_p, raw_g, raw_r, running, kv = c
+            prompt, gen, requests = self._commit_raw(src, raw_p, raw_g, raw_r)
+        TOKEN_SOURCE = src
 
         conn = db()
         try:
@@ -832,7 +966,9 @@ def main():
 
     srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     print(f"TokenBoard [{ROLE}] http://0.0.0.0:{PORT}  box={BOX_NAME} "
-          f"source={TOKEN_SOURCE} vllm={VLLM_URL or '-'} hub={HUB_URL or '-'}")
+          f"source=auto vllm={VLLM_URL or '-'} "
+          f"llama={'pinned:' + ','.join(LLAMA_PINS) if LLAMA_PINS else 'auto-detect'} "
+          f"hub={HUB_URL or '-'}")
     srv.serve_forever()
 
 
