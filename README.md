@@ -95,6 +95,9 @@ samples them every 2 s and stores the running cumulative value in SQLite.
   port is ephemeral, e.g. under Hermes). Multiple llama-servers are
   summed. Pin an endpoint with `llama_url` for llama in Docker (other
   net namespaces are invisible to /proc discovery).
+- **llama requests & KV tiles:** derived from `/slots` (busy->idle
+  edge counting; in-context tokens / n_ctx) — see Limitations for the
+  exactness guarantees. State lives in `meta` (`llama_reqs`, `llama_busy`).
 - **Restart-safe:** if the backend restarts and its counter drops, the
   sampler detects the regression and re-baselines a **persisted offset**
   so the cumulative series stays monotonic — no lost or double-counted
@@ -225,10 +228,13 @@ docs/OPERATIONS.md     ops notes from the field
   HTTP — utilization is tracked, token counts show "no token source".
   (llama.cpp is fully supported — it does expose counters — see How
   token counting works. A thin counting proxy for Ollama is a v2 idea.)
-- **llama.cpp request counts:** current llama.cpp builds expose no
-  completed-requests counter, so the requests KPI reads 0 under llama;
-  token totals are unaffected (a `requests_completed_total` counter is
-  used automatically if a future build adds it).
+- **llama.cpp requests + KV cache are derived from `/slots`:** there is no
+  completed-requests counter or KV-occupancy metric in llama.cpp, so the
+  sampler counts per-slot busy->idle transitions (requests at least as long
+  as the sample interval are exact; sub-2 s probes can slip between samples)
+  and computes KV % as in-context tokens across slots / n_ctx (prefix-cached
+  context counts as occupied, as in vLLM). A future `requests_completed_total`
+  metric is used automatically instead of edge counting.
 - **GB10 memory quirk:** `nvidia-smi --query-gpu=memory.used` reports
   `[N/A]` (unified memory) — memory is reported from `/proc/meminfo`;
   GPU util + power work normally.

@@ -108,6 +108,21 @@ ingested it (~5k phantom tokens) before the re-seed wiped it out. Test
 backends must never bind ports the live sampler polls — stop
 `tokenboard-box` first, or use a port nothing probes.
 
+### 2026-10-21 (later) — requests & KV tiles under llama via /slots
+
+llama.cpp exposes no completed-requests counter and no KV-occupancy metric,
+so both tiles are derived from `/slots`:
+
+- **Requests:** per-slot busy->idle edge counting (`is_processing`), state
+  in meta `llama_reqs`/`llama_busy`. Verified exact: 3 slow requests in,
+  `requests today == 3` out. Sub-2 s requests can slip between samples.
+- **KV %:** Σ in-context tokens across slots / n_ctx (262144, unified pool
+  — all 4 slots report the same n_ctx; do NOT sum it per slot).
+- **PITFALL — do not count `id_task`:** it looks like a request counter but
+  is internal task assignment: measured on the live server, 5 real requests
+  = +40 `id_task` increments (8 per request with MTP spec-decode enabled).
+  Edge counting is the honest signal.
+
 ## Tradeshow checklist
 
 - [ ] Box timezone set to the venue's local zone (daily bars follow it)

@@ -217,6 +217,8 @@ class Sampler(threading.Thread):
         self.offset_req = 0
         self.llama_urls = list(LLAMA_PINS) if LLAMA_PINS else None
         self.llama_next_scan = 0.0
+        self.llama_reqs = {}   # url -> completed-request count; persisted in meta
+        self.llama_busy = {}   # url -> per-slot busy flags; persisted in meta
         self._load_offsets()
 
     def _load_offsets(self):
@@ -225,6 +227,12 @@ class Sampler(threading.Thread):
             self.offset_prompt = int(meta_get(conn, "offset_prompt", 0) or 0)
             self.offset_gen = int(meta_get(conn, "offset_gen", 0) or 0)
             self.offset_req = int(meta_get(conn, "offset_req", 0) or 0)
+            try:
+                self.llama_reqs = json.loads(meta_get(conn, "llama_reqs", "{}") or "{}")
+                self.llama_busy = json.loads(meta_get(conn, "llama_busy", "{}") or "{}")
+            except Exception:
+                self.llama_reqs = {}
+                self.llama_busy = {}
         finally:
             conn.close()
 
@@ -232,6 +240,8 @@ class Sampler(threading.Thread):
         meta_set(conn, "offset_prompt", self.offset_prompt)
         meta_set(conn, "offset_gen", self.offset_gen)
         meta_set(conn, "offset_req", self.offset_req)
+        meta_set(conn, "llama_reqs", json.dumps(self.llama_reqs))
+        meta_set(conn, "llama_busy", json.dumps(self.llama_busy))
 
     def _vllm_counters(self):
         """Return (prompt, gen, requests, req_running, kv_pct) or None."""
@@ -253,22 +263,53 @@ class Sampler(threading.Thread):
                 int(running) if running is not None else None,
                 (kv * 100) if kv is not None else None)
 
+    def _llama_slots(self, url):
+        try:
+            slots = json.loads(http_get(f"{url}/slots", timeout=5))
+            return slots if isinstance(slots, list) else None
+        except Exception:
+            return None
+
+    def _llama_req_advance(self, url, busy_flags):
+        """Per-server completed-request count from /slots busy-state edges.
+
+        A slot's busy->idle transition is exactly one completed request.
+        Requests at least as long as the sample interval are counted exactly;
+        shorter ones (sub-2 s probes) can start AND finish between samples
+        and go unseen (vLLM's counter is exact, this is the best llama.cpp
+        offers). The busy snapshot is persisted, so a request in flight
+        across a TokenBoard restart is still counted when it completes;
+        a changed slot count (llama restart / new parallelism) re-snapshots
+        without counting a spurious completion.
+        """
+        prev = self.llama_busy.get(url)
+        count = self.llama_reqs.get(url, 0)
+        if prev is not None and len(prev) == len(busy_flags):
+            count += sum(1 for was, now in zip(prev, busy_flags) if was and not now)
+        self.llama_reqs[url] = count
+        self.llama_busy[url] = busy_flags
+        return count
+
     def _llama_counters(self):
         """Return (prompt, gen, requests, req_running, kv_pct) summed across
         every llama-server exposing counters, or None if none respond.
 
-        requests is None when the llama.cpp build lacks a completed-requests
-        counter (the dashboard shows 0 requests; token totals unaffected).
-        Endpoints are auto-discovered via /proc unless pinned in config;
-        ports are ephemeral so a failed fetch forces a rescan.
+        Requests come from a metrics counter when the build has one, else
+        from /slots id_task (see _llama_req_advance); if neither is readable
+        requests is None. KV % = in-context tokens across slots / n_ctx
+        (approximation: llama exposes no occupancy metric; prefix-cached
+        prompt state counts as occupied, as in vLLM). Endpoints are
+        auto-discovered via /proc unless pinned in config; ports are
+        ephemeral so a failed fetch forces a rescan.
         """
         if self.llama_urls is None or time.time() >= self.llama_next_scan:
             self.llama_urls = discover_llama_urls() if not LLAMA_PINS else LLAMA_PINS
             self.llama_next_scan = time.time() + 30.0
         prompt = gen = 0
-        reqs = 0.0
+        reqs = 0
         have_reqs = False
         running = None
+        kv_used = kv_cap = 0
         found = False
         for url in self.llama_urls:
             try:
@@ -287,17 +328,39 @@ class Sampler(threading.Thread):
             prompt += int(p + (first_value(m, "llamacpp:prompt_tokens_cached_total") or 0))
             gen += int(g)
             rc = first_value(m, "llamacpp:requests_completed_total")
-            if rc is not None:
-                reqs += rc
-                have_reqs = True
             run = first_value(m, "llamacpp:requests_processing")
             if run is None:
                 run = first_value(m, "llamacpp:requests_active")
             if run is not None:
                 running = (running or 0) + int(run)
+            slots = self._llama_slots(url)
+            if rc is not None:
+                reqs += int(rc)
+                have_reqs = True
+            if slots:
+                nctx = 0
+                busy = []
+                for s in slots:
+                    try:
+                        nctx = max(nctx, int(s.get("n_ctx") or 0))
+                        busy.append(bool(s.get("is_processing")))
+                        in_ctx = int(s.get("n_prompt_tokens") or 0)
+                        nxt = s.get("next_token")
+                        if isinstance(nxt, list) and nxt:
+                            in_ctx += int(nxt[0].get("n_decoded") or 0)
+                        kv_used += in_ctx
+                    except (TypeError, ValueError):
+                        busy.append(False)
+                        continue
+                if nctx > 0:
+                    kv_cap += nctx
+                if rc is None and busy:
+                    reqs += self._llama_req_advance(url, busy)
+                    have_reqs = True
         if not found:
             return None
-        return (prompt, gen, int(reqs) if have_reqs else None, running, None)
+        kv = round(min(100.0, 100.0 * kv_used / kv_cap), 1) if kv_cap else None
+        return (prompt, gen, reqs if have_reqs else None, running, kv)
 
     def _ollama_status(self):
         try:
