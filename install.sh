@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# TokenBoard installer — clone, run this, open a browser. No root, no pip.
+# TokenBoard installer - clone, run this, open a browser. No root, no pip.
 #
 # Usage:
 #   ./install.sh                      # defaults: box on :8100, vLLM on :8000
@@ -44,11 +44,11 @@ say "TokenBoard install"
 
 # ---------------------------------------------------------------- python
 PYTHON="$(command -v python3 || true)"
-[ -n "$PYTHON" ] || die "python3 not found on PATH — Python 3.10+ is the only requirement"
+[ -n "$PYTHON" ] || die "python3 not found on PATH - Python 3.10+ is the only requirement"
 PYVER=$("$PYTHON" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")')
 "$PYTHON" -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' \
-  || die "python3 $PYVER is too old — need 3.10+"
-echo "   python3 $PYVER OK ($PYTHON)  — stdlib only, nothing to pip install"
+  || die "python3 $PYVER is too old - need 3.10+"
+echo "   python3 $PYVER OK ($PYTHON)  - stdlib only, nothing to pip install"
 
 # ---------------------------------------------------------------- vLLM detection
 detect_vllm() {
@@ -74,7 +74,7 @@ if [ -n "$VLLM_URL" ]; then
   echo "   vLLM found at $VLLM_URL (token counting enabled)"
 else
   warn "no vLLM /metrics endpoint found on :8000/:8001 (or --vllm-url given)"
-  warn "continuing anyway — TokenBoard samples GPU/CPU/memory now and starts"
+  warn "continuing anyway - TokenBoard samples GPU/CPU/memory now and starts"
   warn "counting tokens automatically the moment vLLM or llama-server comes up"
   warn "(llama-server is auto-discovered on any local port via /proc; pin one"
   warn " with llama_url in config.json if it runs inside Docker)."
@@ -87,7 +87,7 @@ echo "   box name: $BOX_NAME"
 
 # ---------------------------------------------------------------- config
 if [ -f config.json ]; then
-  warn "config.json already exists — leaving it untouched"
+  warn "config.json already exists - leaving it untouched"
 else
   "$PYTHON" - "$PORT" "$BOX_NAME" "$VLLM_URL" "$HUB_URL" <<'PY'
 import json, sys
@@ -102,7 +102,7 @@ fi
 
 if [ "$WITH_HUB" = 1 ]; then
   if [ -f config-hub.json ]; then
-    warn "config-hub.json already exists — leaving it untouched"
+    warn "config-hub.json already exists - leaving it untouched"
   else
     "$PYTHON" - "$HUB_PORT" <<'PY'
 import json, sys
@@ -119,7 +119,7 @@ say "Frontier prices"
 if timeout 25 "$PYTHON" scripts/refresh_prices.py; then
   echo "   live prices fetched and written to prices.json"
 else
-  warn "live price fetch failed (offline?) — keeping the bundled snapshot"
+  warn "live price fetch failed (offline?) - keeping the bundled snapshot"
   warn "in prices.json; the dashboard shows its 'verified' date. Re-run later:"
   warn "   python3 scripts/refresh_prices.py"
 fi
@@ -146,7 +146,7 @@ elif systemctl --user daemon-reload 2>/dev/null; then
   fi
   echo "   (reboot-proof; logs: journalctl --user -u tokenboard-box)"
 else
-  warn "user systemd unavailable — starting via nohup instead (no auto-start)"
+  warn "user systemd unavailable - starting via nohup instead (no auto-start)"
   nohup "$PYTHON" tokenboard.py >> logs/tokenboard-box.log 2>&1 &
   echo "   box started (pid $!)"
 fi
@@ -175,7 +175,7 @@ PY
   then ok=1; break; fi
   sleep 2
 done
-[ "$ok" = 1 ] || die "dashboard did not come up — check: journalctl --user -u tokenboard-box (or logs/tokenboard-box.log)"
+[ "$ok" = 1 ] || die "dashboard did not come up - check: journalctl --user -u tokenboard-box (or logs/tokenboard-box.log)"
 
 printf '\n\033[1;32m== TokenBoard is live\033[0m\n'
 echo "   this machine :  http://localhost:$PORT"

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>TokenBoard — Local Compute Savings</title>
+<title>TokenBoard - Local Compute Savings</title>
 <script src="/chart.umd.min.js"></script>
 <style>
   :root {
@@ -113,12 +113,12 @@
   <div class="hero">
     <div class="hero-card">
       <div class="hero-label">Tokens served today (local)</div>
-      <div class="hero-num" id="heroTokens">—</div>
+      <div class="hero-num" id="heroTokens">-</div>
       <div class="hero-sub" id="heroSub"></div>
     </div>
     <div class="cost-card">
       <div class="hero-label">Frontier cost you're NOT paying (today)</div>
-      <div class="cost-num" id="heroCost">—</div>
+      <div class="cost-num" id="heroCost">-</div>
       <div class="cost-note" id="heroCostNote">cheapest of the reference frontier models below</div>
     </div>
   </div>
@@ -135,12 +135,12 @@
           <option value="30d">last 30 days</option>
         </select>
       </div>
-      <div class="hero-num h2-num" id="soFarTokens">—</div>
+      <div class="hero-num h2-num" id="soFarTokens">-</div>
       <div class="hero-sub h2-sub" id="soFarSub"></div>
     </div>
     <div class="cost-card" style="padding:16px 22px">
       <div class="hero-label">Frontier cost so far</div>
-      <div class="cost-num" style="font-size:2.1rem" id="soFarCost">—</div>
+      <div class="cost-num" style="font-size:2.1rem" id="soFarCost">-</div>
       <div class="cost-note" id="soFarCostNote"></div>
     </div>
   </div>
@@ -149,7 +149,7 @@
 
   <div class="grid g1">
     <div class="card">
-      <h3>Cost comparison — today's token mix priced at frontier list rates</h3>
+      <h3>Cost comparison - today's token mix priced at frontier list rates</h3>
       <div class="hint">All five reference models, side by side. “Saved” assumes the same workload on this local GB10.</div>
       <div style="overflow-x:auto">
       <table id="priceTable">
@@ -166,20 +166,20 @@
   <div class="grid g1">
     <div class="card">
       <h3>Daily token totals (calendar days, server local time)</h3>
-      <div class="hint">Prompt (input) vs generated (output) tokens per day — bar chart.</div>
+      <div class="hint">Prompt (input) vs generated (output) tokens per day - bar chart.</div>
       <div class="chart-box tall"><canvas id="daysChart"></canvas></div>
     </div>
   </div>
 
   <div class="grid g2">
     <div class="card">
-      <h3>Utilization — last 6 hours</h3>
+      <h3>Utilization - last 6 hours</h3>
       <div class="hint">GPU &amp; CPU utilization through the day (line).</div>
       <div class="chart-box"><canvas id="utilChart"></canvas></div>
     </div>
     <div class="card">
-      <h3>Memory — last 6 hours</h3>
-      <div class="hint">System memory used (GB) — GB10 unified memory (line).</div>
+      <h3>Memory - last 6 hours</h3>
+      <div class="hint">System memory used (GB) - GB10 unified memory (line).</div>
       <div class="chart-box"><canvas id="memChart"></canvas></div>
     </div>
   </div>
@@ -192,7 +192,7 @@
     </div>
     <div class="card">
       <h3>Cumulative since first sample</h3>
-      <div class="hint">This box (or all boxes aggregated) — resets only when the database is wiped.</div>
+      <div class="hint">This box (or all boxes aggregated) - resets only when the database is wiped.</div>
       <div class="kpis" style="grid-template-columns:repeat(3,1fr)" id="cumKpis"></div>
     </div>
   </div>
@@ -201,7 +201,7 @@
     Token counts from vLLM <code>/metrics</code> (authoritative counters; restart-safe via persisted
     offsets). Daily totals are calendar days in the server's local timezone. Reference prices in
     <code>prices.json</code> are current frontier list rates (verified 2026-10-13 against vendor
-    pages) — re-check before public use as list prices change; “saved” figures exclude any local
+    pages) - re-check before public use as list prices change; “saved” figures exclude any local
     electricity/labor cost.
   </footer>
 </div>
@@ -225,8 +225,8 @@ window.addEventListener("unhandledrejection", (e) => {
 </script>
 <script>
 const $ = (id) => document.getElementById(id);
-const fmt = (n) => n == null ? "—" : n.toLocaleString("en-US");
-const money = (n) => n == null ? "—" : "$" + n.toLocaleString("en-US", {maximumFractionDigits: 2});
+const fmt = (n) => n == null ? "-" : n.toLocaleString("en-US");
+const money = (n) => n == null ? "-" : "$" + n.toLocaleString("en-US", {maximumFractionDigits: 2});
 let daysChart, utilChart, memChart;
 const boxParam = new URLSearchParams(location.search).get("box") ? `?box=${encodeURIComponent(new URLSearchParams(location.search).get("box"))}` : "";
 // Time frame for the "So Far" cards: a named preset resolved on the server
@@ -306,9 +306,9 @@ async function refresh() {
 
   // hero
   $("heroTokens").textContent = fmt(st.today.total);
-  $("heroSub").textContent = `${fmt(st.today.prompt)} prompt + ${fmt(st.today.gen)} generated · ${st.live.tokens_per_sec ?? "—"} tok/s`;
+  $("heroSub").textContent = `${fmt(st.today.prompt)} prompt + ${fmt(st.today.gen)} generated · ${st.live.tokens_per_sec ?? "-"} tok/s`;
   const costs = Object.values(st.today.cost_by_model || {});
-  $("heroCost").textContent = costs.length ? money(Math.max(...costs)) : "—";
+  $("heroCost").textContent = costs.length ? money(Math.max(...costs)) : "-";
   $("heroCostNote").textContent =
     `if today's mix ran on the priciest reference model · local cost: ~$0 API spend`;
 
@@ -318,7 +318,7 @@ async function refresh() {
     $("soFarSub").textContent =
       `${fmt(range.prompt)} prompt + ${fmt(range.gen)} generated · ${fmt(range.requests)} requests`;
     const rcosts = Object.values(range.cost_by_model || {});
-    $("soFarCost").textContent = rcosts.length ? money(Math.max(...rcosts)) : "—";
+    $("soFarCost").textContent = rcosts.length ? money(Math.max(...rcosts)) : "-";
     const label = range.range
       ? `${range.range.from} → ${range.range.to}`
       : "all history";
@@ -329,12 +329,12 @@ async function refresh() {
   // KPIs
   const L = st.live;
   $("kpis").innerHTML = "";
-  kpi($("kpis"), "GPU util", L.gpu_pct == null ? "—" : L.gpu_pct + "%", "#5aa9ff");
-  kpi($("kpis"), "GPU power", L.gpu_power_w == null ? "—" : L.gpu_power_w + " W", "#ffb454");
-  kpi($("kpis"), "CPU util", L.cpu_pct == null ? "—" : L.cpu_pct + "%", "#b48cff");
-  kpi($("kpis"), "Memory", L.mem_used_gb == null ? "—" : L.mem_used_gb + " / " + L.mem_total_gb + " GB", "#38d6c4");
-  kpi($("kpis"), "Requests today", fmt(st.today.requests ?? "—"), "#8b9bb0");
-  kpi($("kpis"), "KV cache", L.kv_cache_pct == null ? "—" : L.kv_cache_pct.toFixed(0) + "%", "#2dd4a7");
+  kpi($("kpis"), "GPU util", L.gpu_pct == null ? "-" : L.gpu_pct + "%", "#5aa9ff");
+  kpi($("kpis"), "GPU power", L.gpu_power_w == null ? "-" : L.gpu_power_w + " W", "#ffb454");
+  kpi($("kpis"), "CPU util", L.cpu_pct == null ? "-" : L.cpu_pct + "%", "#b48cff");
+  kpi($("kpis"), "Memory", L.mem_used_gb == null ? "-" : L.mem_used_gb + " / " + L.mem_total_gb + " GB", "#38d6c4");
+  kpi($("kpis"), "Requests today", fmt(st.today.requests ?? "-"), "#8b9bb0");
+  kpi($("kpis"), "KV cache", L.kv_cache_pct == null ? "-" : L.kv_cache_pct.toFixed(0) + "%", "#2dd4a7");
 
   // price table
   const models = (st.prices || {}).models || [];
@@ -420,7 +420,7 @@ async function refresh() {
   // boxes
   $("boxList").innerHTML = "";
   $("boxListHint").textContent = st.role === "hub"
-    ? `${boxes.length} box(es) registered — aggregate view` : "per-box totals";
+    ? `${boxes.length} box(es) registered - aggregate view` : "per-box totals";
   boxes.forEach(b => {
     const total = (b.prompt || 0) + (b.gen || 0);
     const online = (Date.now() / 1000 - b.last_seen) < 120;

@@ -1,4 +1,4 @@
-# TokenBoard — field operations notes
+# TokenBoard - field operations notes
 
 Machine-specific operating notes from the original deployment (GB10 "gb10-1").
 For the generic, new-user documentation see the main README.
@@ -9,12 +9,12 @@ For the generic, new-user documentation see the main README.
 - Hub: same machine, `config-hub.json`, port 8101
 - Model backend **since 2026-10-21**: llama.cpp (`llama-server`, Hermes-
   spawned, ephemeral port) serving Qwen3.8-Flash-Next IQ4_XS + MTP draft.
-  TokenBoard counts it via llama auto-discovery — no config needed.
+  TokenBoard counts it via llama auto-discovery - no config needed.
 - Model backend until 2026-10-15: vLLM Qwen3.8-27B (NVFP4) in Docker,
   `--solo` mode, port 8000 (see startup below; kept for reference)
 - Deployed 2026-10-12; running as user systemd services since 2026-10-13
 
-## vLLM startup (manual — not a service)
+## vLLM startup (manual - not a service)
 
 ```bash
 cd ~/spark-vllm-docker
@@ -47,7 +47,7 @@ installs them for any machine.
 
 ## Incident log
 
-### 2026-10-14 — reboot exposed a silent commit bug
+### 2026-10-14 - reboot exposed a silent commit bug
 
 Full machine reboot at ~17:22 (the "does it survive a reboot" test). vLLM
 down 17:22–22:05, then restarted with counters at 0. The dashboard then
@@ -56,7 +56,7 @@ showed "today = 0" and "last 7 days ≈ 568k" instead of the true ~2.6M and
 
 **Root cause:** the sampler's reset-detection state (offsets + last-seen raw
 counters) is persisted in the SQLite `meta` table, but the writes were made
-on a connection that was never `commit()`-ed — SQLite rolled them back on
+on a connection that was never `commit()`-ed - SQLite rolled them back on
 close. Reset detection therefore always saw `last_raw_prompt = None` and
 never re-baselined; the cumulative series dropped 27,142,367 → 0 at the
 vLLM restart. Windows whose baseline predated the reset (e.g. "yesterday" =
@@ -68,16 +68,16 @@ plus rollback-on-error. The affected counter was back-filled manually:
 `offset_prompt = 27142367 / offset_gen = 292835 / offset_req = 282` (last
 pre-reset sample, 17:22:06), `last_raw_*` set to the live raw counters.
 Corrected readouts verified: today ≈ 3.2M, yesterday 23,021,173 (unchanged),
-7d/30d/all ≈ 29M, cumulative 29.2M — all consistent with the sample history.
+7d/30d/all ≈ 29M, cumulative 29.2M - all consistent with the sample history.
 
 **Lesson:** every SQLite write in this project must be followed by an
 explicit `conn.commit()` (WAL mode does not auto-commit).
 
-**Outcome:** this was also a successful live validation of the reboot story —
+**Outcome:** this was also a successful live validation of the reboot story -
 systemd services came up on their own, the 4.7 h vLLM gap shows in the GPU
 chart, and counters continued from 27.1M instead of 0.
 
-### 2026-10-21 — llama.cpp token source added; vLLM→llama switch re-seed
+### 2026-10-21 - llama.cpp token source added; vLLM→llama switch re-seed
 
 The box's model moved from vLLM (dead since 10-15 22:11, cumulative
 37,474,052 prompt / 425,572 gen / 413 req) to Hermes-served llama.cpp
@@ -85,7 +85,7 @@ The box's model moved from vLLM (dead since 10-15 22:11, cumulative
 sampler counted nothing after the switch; llama support with /proc port
 auto-discovery and source-aware re-baselining was added (see README).
 
-Re-seed used after the switch (additive semantics — correct only because
+Re-seed used after the switch (additive semantics - correct only because
 the two engines never overlapped and the llama server started after
 midnight, so its whole raw counter belongs to "today"):
 
@@ -105,10 +105,10 @@ c.commit()
 **Test-bleed warning:** during the same window a test fixture served a fake
 vLLM `/metrics` on :8000 for ~40 s; the then-running vLLM-only sampler
 ingested it (~5k phantom tokens) before the re-seed wiped it out. Test
-backends must never bind ports the live sampler polls — stop
+backends must never bind ports the live sampler polls - stop
 `tokenboard-box` first, or use a port nothing probes.
 
-### 2026-10-21 (later) — requests & KV tiles under llama via /slots
+### 2026-10-21 (later) - requests & KV tiles under llama via /slots
 
 llama.cpp exposes no completed-requests counter and no KV-occupancy metric,
 so both tiles are derived from `/slots`:
@@ -117,8 +117,8 @@ so both tiles are derived from `/slots`:
   in meta `llama_reqs`/`llama_busy`. Verified exact: 3 slow requests in,
   `requests today == 3` out. Sub-2 s requests can slip between samples.
 - **KV %:** Σ in-context tokens across slots / n_ctx (262144, unified pool
-  — all 4 slots report the same n_ctx; do NOT sum it per slot).
-- **PITFALL — do not count `id_task`:** it looks like a request counter but
+  - all 4 slots report the same n_ctx; do NOT sum it per slot).
+- **PITFALL - do not count `id_task`:** it looks like a request counter but
   is internal task assignment: measured on the live server, 5 real requests
   = +40 `id_task` increments (8 per request with MTP spec-decode enabled).
   Edge counting is the honest signal.

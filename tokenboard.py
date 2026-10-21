@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-TokenBoard — local token counter & frontier-cost-savings dashboard.
+TokenBoard - local token counter & frontier-cost-savings dashboard.
 
 Stdlib-only (no pip). One process does:
   * sampling  : vLLM /metrics (authoritative token counters), /proc/stat,
@@ -555,7 +555,7 @@ def daily_totals(conn, box=None, days=14):
     box counters are monotonic (offsets persisted on restart).
 
     Note: a box whose vLLM counters predate the window is attributed its
-    entire counter to the first day in the window — fine for tradeshow
+    entire counter to the first day in the window - fine for tradeshow
     boxes where vLLM is freshly started per show.
     """
     today = date.today()  # local calendar date

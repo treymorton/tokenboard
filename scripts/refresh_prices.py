@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Refresh TokenBoard's frontier price table with current list rates.
 
-Source: OpenRouter's public model API (https://openrouter.ai/api/v1/models) —
+Source: OpenRouter's public model API (https://openrouter.ai/api/v1/models) -
 free, no API key, one request. OpenRouter is a third-party relay, not the
 vendors themselves; it is the only practical no-key automated source (OpenAI
 and Google's own pricing pages block automated fetches). Each entry in
 prices.json carries the fetch date in the file's `note` field.
 
-Selection rules (conservative — for cost-savings claims):
+Selection rules (conservative - for cost-savings claims):
   * exact model-id match preferred
   * `:batch` variants excluded (half-price, not the list rate)
   * `-mini` / `-nano` / dated (YYYY-MM-DD) siblings excluded
@@ -102,7 +102,7 @@ def main():
             notes.append(f"{name}: {note}")
 
     if missing:
-        print(f"\n! could not resolve: {', '.join(missing)} — keeping existing {out_path}")
+        print(f"\n! could not resolve: {', '.join(missing)} - keeping existing {out_path}")
         sys.exit(1)
 
     today = date.today().isoformat()
@@ -123,7 +123,7 @@ def main():
     with open(out_path, "w") as f:
         json.dump(table, f, indent=2)
         f.write("\n")
-    print(f"\nwrote {out_path} (verified {today}) — dashboard picks it up on next request, no restart")
+    print(f"\nwrote {out_path} (verified {today}) - dashboard picks it up on next request, no restart")
 
 
 if __name__ == "__main__":
