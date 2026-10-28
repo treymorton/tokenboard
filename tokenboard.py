@@ -589,6 +589,11 @@ def daily_totals(conn, box=None, days=14):
         for d in sorted(by_day):
             day_vals = by_day[d]
             end = day_vals[-1]
+            if d not in labels:
+                # pre-window row (fetched to baseline day one): it only
+                # carries the running base forward, never gets its own bar
+                base_p, base_g, base_r = end[0], end[1], end[2] or 0
+                continue
             labels[d]["prompt"] = max(0, end[0] - base_p)
             labels[d]["gen"] = max(0, end[1] - base_g)
             labels[d]["requests"] = max(0, (end[2] or 0) - base_r)
