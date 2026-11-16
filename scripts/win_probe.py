@@ -251,6 +251,18 @@ def http_get(url):
         return r.status, r.read(400_000).decode("utf-8", "replace")
 
 
+def http_error_line(path, e):
+    """Classify a failed /metrics request with as much detail as we can get."""
+    import urllib.error
+    if isinstance(e, urllib.error.HTTPError):
+        try:
+            snippet = e.read(160).decode("utf-8", "replace").strip()
+        except Exception:
+            snippet = ""
+        return f"  {path} -> HTTP {e.code} {e.reason}; body: {snippet[:140]!r}"
+    return f"  {path} -> {type(e).__name__}: {str(e)[:120]}"
+
+
 def tcp_open(port):
     """Fast gate: does anything actually accept connections on this port?"""
     try:
@@ -266,11 +278,11 @@ def classify(port):
     lines = []
     # /metrics
     st, body = None, None
-    err = "no-response"
+    err = "  /metrics -> no-response"
     try:
         st, body = http_get(f"http://127.0.0.1:{port}/metrics")
     except Exception as e:
-        err = type(e).__name__
+        err = http_error_line("/metrics", e)
     if body is not None:
         prefixes = sorted(set(re.findall(r"^([A-Za-z_][\w]*):", body, re.M)))
         lines.append(f"  /metrics -> HTTP {st}, prefixes: {prefixes or '(none)'}")
@@ -282,7 +294,7 @@ def classify(port):
         elif "vllm:" in body:
             lines.append("  CLASS: vLLM")
     else:
-        lines.append(f"  /metrics -> {err}")
+        lines.append(err)
     # /slots
     try:
         st, body = http_get(f"http://127.0.0.1:{port}/slots")
