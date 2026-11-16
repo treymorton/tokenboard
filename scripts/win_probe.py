@@ -366,7 +366,8 @@ def report_scan(ports_seen):
 def main():
     L.append("TokenBoard Windows Probe")
     L.append(f"run at: {time.strftime('%Y-%m-%d %H:%M:%S %Z')}")
-    out = os.path.join(os.getcwd(), "win_probe_report.txt")
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    out = os.path.join(os.getcwd(), f"win_probe_report_{stamp}.txt")
     try:
         for name, step in [
             ("system info", report_system),
@@ -391,12 +392,26 @@ def main():
     except KeyboardInterrupt:
         L.append("")
         L.append("!! interrupted by Ctrl+C - above is the partial report")
+    except BaseException:
+        import traceback
+        L.append("")
+        L.append("!! probe crashed - traceback below, partial report above")
+        L.append(traceback.format_exc())
     text = "\n".join(L) + "\n"
-    with open(out, "w", encoding="utf-8") as f:
-        f.write(text)
+    try:
+        with open(out, "w", encoding="utf-8") as f:
+            f.write(text)
+        written = out
+    except OSError:
+        # cwd unwritable (or whatever) - fall back to next to the script
+        out2 = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            f"win_probe_report_{stamp}.txt")
+        with open(out2, "w", encoding="utf-8") as f:
+            f.write(text)
+        written = out2
     print(text)
-    print(f"[written to {out}]")
-    if any("interrupted" in x for x in L):
+    print(f"[report written to: {written}]", flush=True)
+    if any("!!" in x for x in L[-3:]):
         sys.exit(1)
 
 
