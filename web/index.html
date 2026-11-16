@@ -95,6 +95,18 @@
     border-radius: 999px; border: 1px solid var(--border); color: var(--muted);
     margin-left: 8px; }
   .pill.on { color: var(--green); border-color: #1d3a30; }
+
+  .tbtn { background: #0c1117; border: 1px solid var(--border); color: var(--text);
+    border-radius: 8px; padding: 7px 14px; font-size: .82rem; cursor:pointer; }
+  .tbtn:hover { border-color: var(--green); color: var(--green); }
+  .tbtn.primary { border-color: #1d3a30; color: var(--green); font-weight: 600; }
+  .tbtn.danger:hover { border-color: var(--red); color: var(--red); }
+  .task-status { font-size: .85rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .task-status b { color: var(--text); }
+  .task-status .run { color: var(--green); }
+  .task-report { margin-top: 12px; }
+  .task-report .tr-total { font-size: 1.05rem; font-weight: 650; margin-bottom: 6px; }
+  .task-report .tr-note { color: var(--muted); font-size: .74rem; margin-top: 8px; line-height: 1.5; }
   footer { margin-top: 28px; color: var(--muted); font-size: .74rem; line-height: 1.6; }
 </style>
 </head>
@@ -146,6 +158,21 @@
   </div>
 
   <div class="kpis" id="kpis"></div>
+
+  <div class="card" id="taskCard" style="display:none">
+    <h3>Task tracker</h3>
+    <div class="hint">Counts everything this box's engine serves while a task runs
+      (temporal attribution, not tagged). One task at a time; re-running a task name
+      accumulates into the same report. Costs use current <code>prices.json</code> rates.</div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      <button class="tbtn primary" id="taskNewBtn">Track specific task…</button>
+      <button class="tbtn" id="taskResumeBtn" style="display:none">Start Task Counter</button>
+      <button class="tbtn danger" id="taskEndBtn" style="display:none">End Task Counter</button>
+      <button class="tbtn" id="taskReportBtn" style="display:none">Generate Report</button>
+      <span class="task-status" id="taskStatus"></span>
+    </div>
+    <div class="task-report" id="taskReport"></div>
+  </div>
 
   <div class="grid g1">
     <div class="card">
@@ -279,17 +306,18 @@ let refreshSeq = 0;
 
 async function refresh() {
   const seq = ++refreshSeq;
-  let st, days, series, boxes, range;
+  let st, days, series, boxes, range, task;
   try {
-    const [aS, aD, aT, aB, aR] = await Promise.all([
+    const [aS, aD, aT, aB, aR, aTask] = await Promise.all([
       fetch("/api/state" + boxParam).then(r => r.json()),
       fetch("/api/days" + boxParam).then(r => r.json()),
       fetch("/api/timeseries" + boxParam).then(r => r.json()),
       fetch("/api/boxes").then(r => r.json()),
       fetch("/api/range" + rangeQS()).then(r => r.json()),
+      fetch("/api/task/current").then(r => r.json()).catch(() => null),
     ]);
     if (seq !== refreshSeq) return; // a newer refresh superseded this one
-    st = aS; days = aD.days; series = aT; boxes = aB.boxes; range = aR;
+    st = aS; days = aD.days; series = aT; boxes = aB.boxes; range = aR; task = aTask;
   } catch (e) {
     if (seq !== refreshSeq) return;
     $("livePill").classList.add("off");
@@ -436,6 +464,117 @@ async function refresh() {
   kpi($("cumKpis"), "Prompt tokens", fmt(st.cumulative.prompt), "#5aa9ff");
   kpi($("cumKpis"), "Generated tokens", fmt(st.cumulative.gen), "#2dd4a7");
   kpi($("cumKpis"), "Requests", fmt(st.cumulative.requests), "#8b9bb0");
+
+  renderTask(st, task);
+}
+
+// ---------------- task tracker (box role only) ----------------
+let taskLastName = null;   // last-known task name (drives Start Task Counter)
+let taskOpenReport = null; // task name the currently displayed report belongs to
+
+const esc = (s) => String(s).replace(/[&<>"']/g,
+  (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const tsFmt = (t) => t == null ? "-"
+  : new Date(t * 1000).toLocaleString([], { month: "short", day: "numeric",
+      hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
+function renderTask(st, task) {
+  const card = $("taskCard");
+  if (st.role !== "box" || !task) { card.style.display = "none"; return; }
+  card.style.display = "";
+  const active = task.active, last = task.last;
+  taskLastName = (active || last) ? (active || last).name : taskLastName;
+  $("taskResumeBtn").style.display = (!active && taskLastName) ? "" : "none";
+  $("taskEndBtn").style.display = active ? "" : "none";
+  $("taskReportBtn").style.display = (active || last) ? "" : "none";
+  const s = $("taskStatus");
+  if (active) {
+    s.innerHTML = `<span class="run">● running</span> <b>${esc(active.name)}</b>`
+      + ` · ${fmt(active.total)} tokens (${fmt(active.prompt)} in / ${fmt(active.gen)} out)`
+      + ` since ${tsFmt(active.start_ts)}`;
+  } else if (last) {
+    s.innerHTML = `last task: <b>${esc(last.name)}</b> · ${fmt(last.total)} tokens`
+      + ` · ended ${tsFmt(last.end_ts)}`;
+  } else {
+    s.textContent = "no task tracked yet";
+  }
+  // keep an open report live while its task runs
+  if (taskOpenReport && active && active.name === taskOpenReport) showReport(taskOpenReport);
+  if (taskOpenReport === "__none__") showReport(null);
+}
+
+async function taskPost(url, body) {
+  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}) });
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+  return j;
+}
+
+$("taskNewBtn").addEventListener("click", async () => {
+  const name = window.prompt("Task name (e.g. TelemetryCompare):");
+  if (name == null || !name.trim()) return;
+  try {
+    await taskPost("/api/task/start", { name: name.trim() });
+    taskOpenReport = null; $("taskReport").innerHTML = "";
+  } catch (e) { window.alert("Start failed: " + e.message); }
+  refresh();
+});
+
+$("taskResumeBtn").addEventListener("click", async () => {
+  if (!taskLastName) return;
+  try { await taskPost("/api/task/start", { name: taskLastName }); }
+  catch (e) { window.alert("Start failed: " + e.message); }
+  refresh();
+});
+
+$("taskEndBtn").addEventListener("click", async () => {
+  try { await taskPost("/api/task/end"); }
+  catch (e) { window.alert("End failed: " + e.message); }
+  refresh();
+});
+
+$("taskReportBtn").addEventListener("click", () => {
+  const name = taskLastName;
+  showReport(name);
+});
+
+async function showReport(name) {
+  const el = $("taskReport");
+  if (!name) {
+    taskOpenReport = "__none__";
+    el.innerHTML = `<div class="tr-note">No task has been tracked yet.</div>`;
+    return;
+  }
+  let rep;
+  try {
+    rep = await fetch(`/api/task/report?name=${encodeURIComponent(name)}`).then(r => r.json());
+  } catch (e) {
+    el.innerHTML = `<div class="tr-note">Report failed: ${esc(e.message)}</div>`;
+    return;
+  }
+  taskOpenReport = rep.status === "running" ? name : null;
+  if (!rep.name) { el.innerHTML = ""; return; }
+  const models = (rep.prices || {}).models || [];
+  const costRows = models.map(m =>
+    `<tr><td>${esc(m.name)} <span class="vendor">${esc(m.vendor || "")}</span></td>`
+    + `<td class="cost">${money(rep.cost_by_model[m.name] ?? 0)}</td></tr>`).join("");
+  const runRows = rep.runs.map((r, i) =>
+    `<tr><td>${i + 1} · ${tsFmt(r.start_ts)} → ${r.status === "running" ? `<span class="run">running</span>` : tsFmt(r.end_ts)}</td>`
+    + `<td>${fmt(r.prompt)}</td><td>${fmt(r.gen)}</td><td>${fmt(r.total)}</td></tr>`).join("");
+  el.innerHTML = `
+    <div class="tr-total">Task report: ${esc(rep.name)}
+      ${rep.status === "running" ? `<span class="run" style="font-size:.8rem">● live</span>` : ""}</div>
+    <table><thead><tr><th>Run</th><th>Prompt</th><th>Generated</th><th>Total tokens</th></tr></thead>
+    <tbody>${runRows}
+    <tr><td><b>Total (${rep.run_count} run${rep.run_count === 1 ? "" : "s"})</b></td>
+      <td><b>${fmt(rep.prompt)}</b></td><td><b>${fmt(rep.gen)}</b></td>
+      <td><b>${fmt(rep.total)}</b></td></tr></tbody></table>
+    <table style="margin-top:10px"><thead><tr><th>Frontier model (would have cost)</th><th>Cost</th></tr></thead>
+    <tbody>${costRows}</tbody></table>
+    <div class="tr-note">Tokens counted from this box's engine counters while the task ran
+      (temporal attribution). Costs computed at report time from current prices.json;
+      local API spend: $0.00.</div>`;
 }
 
 refresh();

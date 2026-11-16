@@ -22,6 +22,10 @@ Endpoints (server)
   GET  /api/boxes        known boxes (hub view)
   POST /api/ingest       box -> hub sample push
   GET/POST /api/prices   frontier price table
+  GET  /api/task/current active/last task tracker state (box role)
+  GET  /api/task/report  accumulated report for a task name (box role)
+  POST /api/task/start   start tracking a named task
+  POST /api/task/end     stop the active task counter
 """
 import json
 import os
@@ -33,6 +37,7 @@ import threading
 import time
 import urllib.request
 import urllib.error
+import urllib.parse
 from datetime import date, datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -181,7 +186,27 @@ CREATE TABLE IF NOT EXISTS boxes (
 CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY, value TEXT
 );
+
+CREATE TABLE IF NOT EXISTS tasks (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  name          TEXT NOT NULL,
+  start_ts      INTEGER NOT NULL,
+  start_prompt  INTEGER NOT NULL,
+  start_gen     INTEGER NOT NULL,
+  end_ts        INTEGER,
+  end_prompt    INTEGER,
+  end_gen       INTEGER
+);
 """
+
+
+def latest_cum(conn, box):
+    """Latest (ts, prompt_cum, gen_cum) sample for this box, or None."""
+    return conn.execute(
+        "SELECT ts, prompt_cum, gen_cum FROM samples "
+        "WHERE box=? AND prompt_cum IS NOT NULL ORDER BY ts DESC LIMIT 1",
+        (box,),
+    ).fetchone()
 
 
 def db():
@@ -655,6 +680,10 @@ class Handler(BaseHTTPRequestHandler):
             self.api_boxes()
         elif path == "/api/prices":
             self._send(200, load_prices())
+        elif path == "/api/task/current":
+            self.api_task_current()
+        elif path == "/api/task/report":
+            self.api_task_report()
         else:
             self._send(404, {"error": "not found"})
 
@@ -672,6 +701,10 @@ class Handler(BaseHTTPRequestHandler):
                 return
             PRICES_PATH.write_text(json.dumps(prices, indent=2))
             self._send(200, {"ok": True})
+        elif path == "/api/task/start":
+            self.api_task_start()
+        elif path == "/api/task/end":
+            self.api_task_end()
         else:
             self._send(404, {"error": "not found"})
 
@@ -990,6 +1023,155 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             conn.close()
         self._send(200, {"ok": True})
+
+    # ---- task tracker (box role only)
+    #
+    # A "task" is a named time window over this box's cumulative counters:
+    # snapshot at start, snapshot at end, subtract. Attribution is temporal,
+    # not tagged - anything else that hits the engine while a task runs is
+    # included. One active task at a time; runs of the same name accumulate
+    # in the report. Snapshots come from the latest stored sample (up to one
+    # sample interval stale at each boundary - accepted trade-off).
+
+    TASK_COLS = "id, name, start_ts, start_prompt, start_gen, end_ts, end_prompt, end_gen"
+
+    def _task_dict(self, conn, row, prices=None):
+        """Materialize one task run: live deltas for the active run."""
+        (tid, name, sts, sp, sg, ets, ep, eg) = row
+        if ets is None:
+            cur = latest_cum(conn, BOX_NAME)
+            cp, cg = (cur[1], cur[2]) if cur else (sp, sg)
+            prompt, gen = max(0, cp - sp), max(0, cg - sg)
+            status = "running"
+        else:
+            prompt, gen = max(0, ep - sp), max(0, eg - sg)
+            status = "ended"
+        d = {"id": tid, "name": name, "status": status,
+             "start_ts": sts, "end_ts": ets,
+             "prompt": prompt, "gen": gen, "total": prompt + gen}
+        if prices is not None:
+            d["cost_by_model"] = compute_cost(prices, prompt, gen)
+        return d
+
+    def api_task_start(self):
+        if ROLE != "box":
+            self._send(400, {"error": "task tracking is box-role only"})
+            return
+        length = int(self.headers.get("Content-Length", 0))
+        try:
+            name = str(json.loads(self.rfile.read(length)).get("name", "")).strip()
+        except Exception:
+            self._send(400, {"error": "bad json"})
+            return
+        if not name:
+            self._send(400, {"error": "task name required"})
+            return
+        if len(name) > 80:
+            self._send(400, {"error": "task name too long (max 80 chars)"})
+            return
+        conn = db()
+        try:
+            if conn.execute("SELECT 1 FROM tasks WHERE end_ts IS NULL").fetchone():
+                self._send(409, {"error": "a task is already running - end it first"})
+                return
+            cur = latest_cum(conn, BOX_NAME)
+            if not cur:
+                self._send(409, {"error": "no samples recorded yet"})
+                return
+            conn.execute(
+                "INSERT INTO tasks(name,start_ts,start_prompt,start_gen) VALUES(?,?,?,?)",
+                (name, int(time.time()), cur[1], cur[2]),
+            )
+            conn.commit()
+            row = conn.execute(
+                f"SELECT {self.TASK_COLS} FROM tasks ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            self._send(200, {"ok": True, "task": self._task_dict(conn, row)})
+        finally:
+            conn.close()
+
+    def api_task_end(self):
+        if ROLE != "box":
+            self._send(400, {"error": "task tracking is box-role only"})
+            return
+        conn = db()
+        try:
+            row = conn.execute(
+                f"SELECT {self.TASK_COLS} FROM tasks WHERE end_ts IS NULL "
+                "ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            if not row:
+                self._send(409, {"error": "no task is running"})
+                return
+            cur = latest_cum(conn, BOX_NAME)
+            # fall back to the start snapshot if sampling went dark entirely
+            ep, eg = (cur[1], cur[2]) if cur else (row[3], row[4])
+            conn.execute(
+                "UPDATE tasks SET end_ts=?, end_prompt=?, end_gen=? WHERE id=?",
+                (int(time.time()), ep, eg, row[0]),
+            )
+            conn.commit()
+            row2 = conn.execute(
+                f"SELECT {self.TASK_COLS} FROM tasks WHERE id=?", (row[0],)
+            ).fetchone()
+            self._send(200, {"ok": True, "task": self._task_dict(conn, row2)})
+        finally:
+            conn.close()
+
+    def api_task_current(self):
+        conn = db()
+        try:
+            active = conn.execute(
+                f"SELECT {self.TASK_COLS} FROM tasks WHERE end_ts IS NULL "
+                "ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            last = conn.execute(
+                f"SELECT {self.TASK_COLS} FROM tasks ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            self._send(200, {
+                "active": self._task_dict(conn, active) if active else None,
+                "last": self._task_dict(conn, last) if last else None,
+            })
+        finally:
+            conn.close()
+
+    def api_task_report(self):
+        qs = self.path.split("?", 1)[1] if "?" in self.path else ""
+        params = dict(p.split("=", 1) for p in qs.split("&") if "=" in p)
+        name = urllib.parse.unquote_plus(params.get("name", "")).strip()
+        conn = db()
+        try:
+            if not name:
+                # default: active task, else most recent
+                row = conn.execute(
+                    "SELECT name FROM tasks ORDER BY "
+                    "CASE WHEN end_ts IS NULL THEN 0 ELSE 1 END, id DESC LIMIT 1"
+                ).fetchone()
+                if not row:
+                    self._send(200, {"name": None, "runs": [], "prompt": 0,
+                                     "gen": 0, "total": 0, "cost_by_model": {}})
+                    return
+                name = row[0]
+            rows = conn.execute(
+                f"SELECT {self.TASK_COLS} FROM tasks WHERE name=? ORDER BY start_ts",
+                (name,),
+            ).fetchall()
+            prices = load_prices()
+            runs = [self._task_dict(conn, r, prices) for r in rows]
+            prompt = sum(r["prompt"] for r in runs)
+            gen = sum(r["gen"] for r in runs)
+            self._send(200, {
+                "name": name,
+                "status": "running" if any(r["status"] == "running" for r in runs)
+                          else ("ended" if runs else "none"),
+                "run_count": len(runs),
+                "prompt": prompt, "gen": gen, "total": prompt + gen,
+                "cost_by_model": compute_cost(prices, prompt, gen),
+                "runs": runs,
+                "prices": prices,
+            })
+        finally:
+            conn.close()
 
 
 # ---------------------------------------------------------------- main

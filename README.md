@@ -180,6 +180,40 @@ aggregation.
   pages block automated fetches) - re-verify against vendor pages before
   publishing dollar figures.
 
+## Tracking a specific task
+
+The dashboard's **Task tracker** card (box role only) answers "how many tokens
+did *this* job burn?" without digging it out of daily totals:
+
+1. Click **Track specific task…** and enter a name (e.g. `TelemetryCompare`).
+2. Run your job. The card shows the running token count.
+3. **End Task Counter** stops it. **Start Task Counter** starts the same task
+   name again (its runs accumulate), **Track specific task…** starts a new name.
+4. **Generate Report** shows per-run and total tokens plus what the same
+   workload would have cost at each frontier model's list rate. Reports on a
+   running task update live.
+
+How it works and what it means:
+
+- A task is a **named time window over the box's cumulative counters**: a
+  snapshot at start, a snapshot at end, and the difference. Nothing about
+  general/daily tracking changes; task rows live in their own SQLite table.
+- **Attribution is temporal, not tagged.** The engine counter is global, so a
+  task "used" everything the engine served between Start and End. Other
+  sessions (another Hermes agent, a background job, a coworker on the network)
+  that hit the engine while a task runs are counted as task usage. Use it on a
+  dedicated bench system or while nothing else is using the engine.
+- **One active task at a time** (two concurrent windows would each count 100 %
+  of shared traffic). Starting while one runs returns an error.
+- Task start/end survive TokenBoard restarts (persisted snapshots; the
+  cumulative counters are themselves restart-safe via re-baselining offsets).
+  Boundaries take the latest stored sample, so they can lag a click by one
+  sample interval (~2 s) - negligible except for sub-minute tasks.
+- **Costs are computed at report time** from current `prices.json`, so
+  refreshing prices between runs changes a report's dollar figures (token
+  counts never change).
+- Task tracking is per-box; the hub does not roll task data up.
+
 ## Autostart & operations
 
 User systemd services (installed by `install.sh`):
@@ -206,6 +240,10 @@ they start at boot without a login (needs root once). Without systemd, use
 | `GET /api/boxes` | registered boxes + cumulative totals |
 | `POST /api/ingest` | box→hub sample push |
 | `GET/POST /api/prices` | read/update the frontier price table |
+| `GET /api/task/current` | active/last task-tracker state (box) |
+| `GET /api/task/report?name=X` | accumulated tokens + frontier cost per run for a task name (box; omitted `name` = current/last task) |
+| `POST /api/task/start` | body `{"name": "..."}` - start tracking (one at a time) |
+| `POST /api/task/end` | stop the active task counter |
 
 ## Project layout
 
