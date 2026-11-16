@@ -123,6 +123,56 @@ so both tiles are derived from `/slots`:
   = +40 `id_task` increments (8 per request with MTP spec-decode enabled).
   Edge counting is the honest signal.
 
+## Windows workstations
+
+TokenBoard runs box-role on Windows 10/11 (no hub on Windows - Task Scheduler
+replaces systemd-user; capability matrix in README "Windows").
+
+```powershell
+# install + autostart (logon task) + start now
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+# ops
+Get-ScheduledTask -TaskName "TokenBoard Box" | Get-ScheduledTaskInfo
+Start-ScheduledTask -TaskName "TokenBoard Box"
+Stop-ScheduledTask -TaskName "TokenBoard Box"; Stop-Process -Name pythonw
+Unregister-ScheduledTask -TaskName "TokenBoard Box" -Confirm:$false
+# logs: pythonw writes nowhere visible - run in a console to see output:
+python tokenboard.py
+```
+
+- **Diagnostics:** `python scripts\win_probe.py 2>&1 | Tee-Object probe_console.txt`
+  reports what the box exposes (CPU/mem APIs, nvidia-smi, ports, backend
+  classification). Read-only; give the report to whoever supports TokenBoard.
+- **Discovery:** llama-server.exe is auto-found when the process image name
+  contains "llama" (word-boundary - `ollama.exe` deliberately does NOT
+  match). Anything else: pin `llama_url` in config.json. The server must run
+  with `--metrics` for token counting; without it, `/metrics` answers 501
+  with exactly that advice.
+- **Store-Python** (WindowsApps path) works, but check `python --version` -
+  the "python" stub that opens the Microsoft Store means Python isn't
+  actually installed; use a python.org install for a tradeshow box.
+- **Firewall:** install.ps1 binds loopback (`bind_host`) so there's no
+  prompt; `0.0.0.0` (LAN/hub visibility) triggers a one-time allow prompt.
+- Windows boxes push to a Linux hub via `hub_url` like any box; task tracker
+  data stays per-box (hub has no task rollup).
+
+## Task tracker operations
+
+State lives in the `tasks` table (one row per run; `end_ts NULL` = active).
+Endpoints: `POST /api/task/{start,end}`, `GET /api/task/{current,report}`.
+Reports are computed at request time (token deltas from stored snapshots;
+costs from current prices.json) - no background job, nothing to repair after
+a restart: an active task simply keeps accumulating.
+
+```sql
+-- end a stuck task without the dashboard (or clear history):
+UPDATE tasks SET end_ts=<now_epoch>, end_prompt=<cum_p>, end_gen=<cum_g>
+  WHERE end_ts IS NULL;
+```
+
+Attribution is temporal - while a task runs, ALL engine traffic counts
+(demo boxes: close other sessions first). One active task per box by design.
+
 ## Tradeshow checklist
 
 - [ ] Box timezone set to the venue's local zone (daily bars follow it)

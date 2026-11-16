@@ -1,9 +1,10 @@
 # TokenBoard
 
 **Local inference, quantified.** TokenBoard runs on the box serving your local
-model (GB10, DGX Spark, or any Linux box with vLLM), counts every token the
-model serves, and shows live what that activity would have cost on frontier
-APIs - so at the end of a tradeshow day you can say:
+model (GB10, DGX Spark, any Linux box with vLLM/llama.cpp, or a Windows
+workstation), counts every token the model serves, and shows live what that
+activity would have cost on frontier APIs - so at the end of a tradeshow day
+you can say:
 
 > *"We served 23M tokens today, locally, on this box. The same workload on
 > the frontier API would have cost $X."*
@@ -14,16 +15,23 @@ One clone, one command, one browser tab:
 
 ```bash
 git clone https://github.com/treymorton/tokenboard tokenboard && cd tokenboard
-./install.sh
+./install.sh                        # Linux
+# open http://localhost:8100
+```
+
+```powershell
+git clone https://github.com/treymorton/tokenboard tokenboard ; cd tokenboard
+powershell -ExecutionPolicy Bypass -File .\install.ps1   # Windows (see "Windows")
 # open http://localhost:8100
 ```
 
 ## Requirements
 
-- **Linux** (aarch64 or x86_64; built and tested on NVIDIA GB10)
-- **Python 3.10+** - that's it. TokenBoard is stdlib-only; `install.sh`
-  installs nothing and needs no root. Chart.js is vendored, so the dashboard
-  works fully offline.
+- **Linux** (aarch64 or x86_64; built and tested on NVIDIA GB10) **or
+  Windows 10/11** (see the [Windows](#windows) section for backend support)
+- **Python 3.10+** - that's it. TokenBoard is stdlib-only; `install.sh` /
+  `install.ps1` install nothing and need no root/admin. Chart.js is vendored,
+  so the dashboard works fully offline.
 - **A local inference server: vLLM or llama.cpp** (llama-server) - the
   prerequisite. TokenBoard reads the server's cumulative Prometheus
   counters, which are exact: what the API would bill. vLLM is preferred
@@ -44,9 +52,15 @@ git clone https://github.com/treymorton/tokenboard tokenboard && cd tokenboard
 - **Daily bar chart:** prompt vs generated tokens per calendar day
   (server local time - set the box's timezone to the venue's before a show)
 - **Line charts:** GPU/CPU utilization and memory/power, last 6 h
+- **Task tracker:** name a task (e.g. one demo), watch its live token count,
+  end it, and generate an accumulated report - tokens plus frontier-model
+  cost - without digging the usage out of daily totals
 - **Boxes panel:** per-box online status + cumulative totals (hub mode)
 
 ## How install.sh works
+
+(`install.ps1` on Windows does the same, plus the Task Scheduler logon task -
+see the [Windows](#windows) section.)
 
 1. checks Python ≥ 3.10
 2. probes `127.0.0.1:8000` / `:8001` for a vLLM `/metrics` endpoint
