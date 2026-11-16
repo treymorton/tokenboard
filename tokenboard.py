@@ -32,6 +32,7 @@ import os
 import re
 import sqlite3
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -59,6 +60,9 @@ DB_PATH = ROOT / CONFIG.get("db_file", "tokenboard.db")
 BOX_NAME = (CONFIG.get("box_name") or "").strip() or socket.gethostname()
 ROLE = CONFIG.get("role", "box")
 PORT = int(CONFIG.get("port", 8100))
+# bind address: keep loopback on Windows to skip the firewall prompt unless
+# the box must be visible to a hub/other machines (then set e.g. "0.0.0.0")
+HOST = str(CONFIG.get("bind_host", "0.0.0.0"))
 VLLM_URL = (CONFIG.get("vllm_url") or "http://127.0.0.1:8000").rstrip("/")
 OLLAMA_URL = (CONFIG.get("ollama_url") or "").rstrip("/")
 _llama_cfg = CONFIG.get("llama_url") or ""
@@ -75,6 +79,91 @@ METRIC_RE = re.compile(
     r"^(?P<name>(?:vllm|llamacpp):[a-zA-Z0-9_:]+)(?:\{(?P<labels>[^}]*)\})?\s+(?P<value>[\d.eE+-]+)$"
 )
 LABEL_RE = re.compile(r'(\w+)="([^"]*)"')
+
+IS_WINDOWS = (os.name == "nt")
+CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def _subprocess_kwargs():
+    """No console flash when running under pythonw (Windows)."""
+    return {"creationflags": CREATE_NO_WINDOW} if IS_WINDOWS else {}
+
+
+if IS_WINDOWS:
+    import ctypes
+
+    class _FILETIME(ctypes.Structure):
+        _fields__ = [("lo", ctypes.c_uint32), ("hi", ctypes.c_uint32)]
+
+    class _MEMORYSTATUSEX(ctypes.Structure):
+        _fields__ = [
+            ("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+            ("ullTotalPhys", ctypes.c_ulonglong),
+            ("ullAvailPhys", ctypes.c_ulonglong),
+            ("ullTotalPageFile", ctypes.c_ulonglong),
+            ("ullAvailPageFile", ctypes.c_ulonglong),
+            ("ullTotalVirtual", ctypes.c_ulonglong),
+            ("ullAvailVirtual", ctypes.c_ulonglong),
+            ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+        ]
+
+    def _ft(v):
+        return (v.hi << 32) | v.lo
+
+    def _sys_times():
+        """(busy_100ns, total_100ns) from kernel32.GetSystemTimes."""
+        idle, kern, user = _FILETIME(), _FILETIME(), _FILETIME()
+        if not ctypes.windll.kernel32.GetSystemTimes(
+                ctypes.byref(idle), ctypes.byref(kern), ctypes.byref(user)):
+            raise ctypes.WinError()
+        busy = _ft(kern) + _ft(user) - _ft(idle)
+        return busy, _ft(kern) + _ft(user)
+
+    def _mem_status():
+        """(used_gb, total_gb) from kernel32.GlobalMemoryStatusEx."""
+        m = _MEMORYSTATUSEX()
+        m.dwLength = ctypes.sizeof(_MEMORYSTATUSEX)
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m)):
+            raise ctypes.WinError()
+        gb = 1024 ** 3
+        return (round((m.ullTotalPhys - m.ullAvailPhys) / gb, 2),
+                round(m.ullTotalPhys / gb, 2))
+
+    def _win_netstat_listening():
+        """[(port, pid)] for TCP LISTENING sockets (netstat -ano -p tcp)."""
+        out = subprocess.run(
+            ["netstat", "-ano", "-p", "tcp"],
+            capture_output=True, text=True, errors="replace",
+            timeout=20, **_subprocess_kwargs()).stdout
+        rows = []
+        for line in out.splitlines():
+            f = line.split()
+            if len(f) >= 5 and f[3].upper() == "LISTENING":
+                try:
+                    rows.append((int(f[1].rsplit(":", 1)[1]), int(f[4])))
+                except ValueError:
+                    continue
+        return rows
+
+    def _win_pid_images():
+        """pid -> image name (tasklist /fo csv /nh)."""
+        import csv as _csv
+        import io as _io
+        names = {}
+        try:
+            out = subprocess.run(
+                ["tasklist", "/fo", "csv", "/nh"],
+                capture_output=True, text=True, errors="replace",
+                timeout=20, **_subprocess_kwargs()).stdout
+            for row in _csv.reader(_io.StringIO(out)):
+                if len(row) >= 2:
+                    try:
+                        names[int(row[1])] = row[0]
+                    except ValueError:
+                        pass
+        except Exception:
+            pass
+        return names
 
 
 def now_utc():
@@ -116,10 +205,21 @@ def discover_llama_urls():
     """Base URLs of every LISTEN socket owned by a llama-server process.
 
     Hermes/llama.cpp launch llama-server on ephemeral ports, so we find it
-    the way a sysadmin would: /proc comm -> socket fds -> /proc/net/tcp[6]
-    LISTEN rows. Stdlib-only, Linux. Docker-external llama instances need
-    an explicit llama_url (different net = invisible here).
+    the way a sysadmin would. Linux: /proc comm -> socket fds ->
+    /proc/net/tcp[6] LISTEN rows. Windows: netstat -ano + tasklist (image
+    name contains 'llama'; run `llama-server.exe --metrics` - see README
+    "Windows"). Stdlib-only. Docker/external llama instances and unusual
+    process names need an explicit llama_url (different net = invisible).
     """
+    if IS_WINDOWS:
+        urls = set()
+        images = _win_pid_images()
+        # word-boundary match so 'ollama.exe' is NOT mistaken for llama-server
+        llama_re = re.compile(r"(^|[^a-z])llama", re.I)
+        for port, pid in _win_netstat_listening():
+            if llama_re.search(images.get(pid, "")):
+                urls.add(f"http://127.0.0.1:{port}")
+        return sorted(urls, key=lambda u: int(u.rsplit(":", 1)[1]))
     sock_inodes = set()
     try:
         pids = [p for p in os.listdir("/proc") if p.isdigit()]
@@ -396,7 +496,22 @@ class Sampler(threading.Thread):
             return None
 
     def _cpu_pct(self):
-        """Overall CPU busy % from /proc/stat delta."""
+        """Overall CPU busy % (Windows: GetSystemTimes delta; Linux: /proc/stat)."""
+        if IS_WINDOWS:
+            try:
+                cur = _sys_times()
+            except Exception:
+                return None
+            if self.last_proc is None:
+                self.last_proc = cur
+                return None
+            prev = self.last_proc
+            self.last_proc = cur
+            total_delta = cur[1] - prev[1]
+            busy_delta = cur[0] - prev[0]
+            if total_delta <= 0:
+                return None
+            return round(100.0 * busy_delta / total_delta, 1)
         try:
             with open("/proc/stat") as f:
                 fields = [int(x) for x in f.readline().split()[1:]]
@@ -414,6 +529,11 @@ class Sampler(threading.Thread):
         return round(100.0 * (total_delta - idle_delta) / total_delta, 1)
 
     def _mem_gb(self):
+        if IS_WINDOWS:
+            try:
+                return _mem_status()
+            except Exception:
+                return None, None
         try:
             info = {}
             with open("/proc/meminfo") as f:
@@ -427,13 +547,14 @@ class Sampler(threading.Thread):
             return None, None
 
     def _gpu(self):
-        """GPU util % + power draw (works on GB10; memory fields are N/A there)."""
+        """GPU util % + power draw (GB10 and NVIDIA on Windows via nvidia-smi;
+        memory fields are N/A there)."""
         try:
-            import subprocess
             out = subprocess.run(
                 ["nvidia-smi", "--query-gpu=utilization.gpu,power.draw",
                  "--format=csv,noheader,nounits"],
                 capture_output=True, text=True, timeout=5,
+                **_subprocess_kwargs(),
             ).stdout.strip().splitlines()
             if out:
                 util, power = out[0].split(",")
@@ -1214,8 +1335,8 @@ def main():
         if HUB_URL:
             threading.Thread(target=push_loop, daemon=True).start()
 
-    srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
-    print(f"TokenBoard [{ROLE}] http://0.0.0.0:{PORT}  box={BOX_NAME} "
+    srv = ThreadingHTTPServer((HOST, PORT), Handler)
+    print(f"TokenBoard [{ROLE}] http://{HOST}:{PORT}  box={BOX_NAME} "
           f"source=auto vllm={VLLM_URL or '-'} "
           f"llama={'pinned:' + ','.join(LLAMA_PINS) if LLAMA_PINS else 'auto-detect'} "
           f"hub={HUB_URL or '-'}")

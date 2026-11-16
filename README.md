@@ -214,6 +214,44 @@ How it works and what it means:
   counts never change).
 - Task tracking is per-box; the hub does not roll task data up.
 
+## Windows
+
+TokenBoard runs on Windows workstations (Windows 10/11, Python 3.10+,
+stdlib only). vLLM itself is Linux-only, but the token sources that matter
+on Windows are llama.cpp-based - and the platform layer (CPU via
+`GetSystemTimes`, memory via `GlobalMemoryStatusEx`, GPU via `nvidia-smi`,
+server, dashboard, task tracker) is fully supported.
+
+Install (clone-and-run, no admin, no pip):
+
+```powershell
+git clone https://github.com/... tokenboard
+cd tokenboard
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+This writes `config.json`, fetches prices, starts the box on `:8100`
+(loopback only - no firewall prompt), and registers a Task Scheduler logon
+task ("TokenBoard Box"); remove it with `Unregister-ScheduledTask -TaskName
+'TokenBoard Box'`. To share the dashboard on the LAN set `"bind_host":
+"0.0.0.0"` in `config.json` (Windows will prompt for a firewall rule once).
+
+Backend capability on Windows (measured 2026-11-16 against Windows builds;
+`scripts/win_probe.py` reports what your machine exposes):
+
+| backend | tokens | requests | CPU/mem/GPU | note |
+|---|---|---|---|---|
+| llama-server.exe **with `--metrics`** | exact | yes | yes | recommended; auto-discovered when the process name contains `llama`, else set `llama_url` |
+| llama-server.exe without `--metrics` | no | yes | yes | server answers `/metrics` with 501 + "Start it with `--metrics`" |
+| LM Studio local server | no | partial | yes | runs llama.cpp without metrics and doesn't expose the flag; `/metrics` returns that same 501 |
+| Ollama | version-dependent | yes | yes | needs a build that serves `/metrics` (older builds return 404 - upgrade Ollama) |
+
+So: for exact token accounting on Windows, run the model through
+`llama-server.exe --metrics` (any llama.cpp release build; it can proxy the
+same GGUF models LM Studio/Ollama downloaded). Everything else - the
+dashboard, daily totals, frontier-cost savings, task tracker - works on all
+of them; only the token counters require metrics.
+
 ## Autostart & operations
 
 User systemd services (installed by `install.sh`):
