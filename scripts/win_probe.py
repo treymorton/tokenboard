@@ -24,7 +24,8 @@ import sys
 import time
 import urllib.request
 
-HTTP_TIMEOUT = 1.5
+HTTP_TIMEOUT = 1.0
+TCP_TIMEOUT = 0.3
 # well-known inference-server ports, probed even when netstat misses them:
 # LM Studio default, Ollama default, llama-server default, vLLM default
 COMMON_PORTS = [1234, 11434, 8080, 8000, 8001, 8081]
@@ -250,6 +251,16 @@ def http_get(url):
         return r.status, r.read(400_000).decode("utf-8", "replace")
 
 
+def tcp_open(port):
+    """Fast gate: does anything actually accept connections on this port?"""
+    try:
+        s = socket.create_connection(("127.0.0.1", port), TCP_TIMEOUT)
+        s.close()
+        return True
+    except OSError:
+        return False
+
+
 def classify(port):
     """Probe one port: what backend does it look like? Returns text lines."""
     lines = []
@@ -294,26 +305,45 @@ def classify(port):
     return lines
 
 
+NOISE = ("URLError", "TimeoutError", "ConnectionRefusedError", "no-response")
+
+
+def classify_guarded(port):
+    if not tcp_open(port):
+        return port, []
+    return port, classify(port)
+
+
 def report_scan(ports_seen):
     section("localhost HTTP scan (metrics / slots / ollama)")
     ports = sorted(ports_seen | set(COMMON_PORTS))
     if not ports:
         L.append("no ports to scan")
         return
-    verdict_any = False
+    from concurrent.futures import ThreadPoolExecutor
+    results = {}
+    quiet = []
+    L.append(f"scanning {len(ports)} port(s) in parallel "
+             f"(closed ports are skipped after a {TCP_TIMEOUT}s TCP check)...")
+    with ThreadPoolExecutor(max_workers=16) as ex:
+        for port, lines in ex.map(classify_guarded, ports):
+            real = [x for x in lines
+                    if "->" in x and not any(n in x for n in NOISE)]
+            results[port] = real
+            print(f"  scanned :{port}"
+                  + (f"  <- HTTP server, {len(real)} finding(s)" if real else ""),
+                  flush=True)
+    verdict = False
     for port in ports:
-        good, res = ok(classify, port)
-        L.append(f"port {port}:")
-        if good:
-            real = [x for x in res if "->" in x]
-            if real:
-                verdict_any = True
-                L.extend(res)
-            else:
-                L.append("  (no HTTP response of interest)")
+        if results[port]:
+            verdict = True
+            L.append(f"port {port}:")
+            L.extend(results[port])
         else:
-            L.append(f"  scan error: {res}")
-    if not verdict_any:
+            quiet.append(str(port))
+    if quiet:
+        L.append("closed / no HTTP of interest: " + ", ".join(quiet))
+    if not verdict:
         L.append("")
         L.append("No inference server detected. Start llama-server / LM Studio's")
         L.append("local server / Ollama, then re-run this probe.")
@@ -324,25 +354,38 @@ def report_scan(ports_seen):
 def main():
     L.append("TokenBoard Windows Probe")
     L.append(f"run at: {time.strftime('%Y-%m-%d %H:%M:%S %Z')}")
-    report_system()
-    report_cpu()
-    report_mem()
-    report_gpu()
-    rows, ports_seen = report_ports()
-    report_scan(ports_seen)
-    section("what this tells us")
-    L.append("- GetSystemTimes / GlobalMemoryStatusEx OK  -> CPU/mem tiles work")
-    L.append("- nvidia-smi OK                             -> GPU util/power work")
-    L.append("- llama.cpp CLASS port                      -> token tracking works")
-    L.append("  (auto-discovery is designed from the netstat rows above)")
-    L.append("- Ollama CLASS                              -> needs /metrics check above")
-    L.append("- 'NOT USABLE' lines are the gaps TokenBoard's Windows support must fill")
-    text = "\n".join(L) + "\n"
     out = os.path.join(os.getcwd(), "win_probe_report.txt")
+    try:
+        for name, step in [
+            ("system info", report_system),
+            ("cpu (1 s sample)", report_cpu),
+            ("memory", report_mem),
+            ("nvidia-smi", report_gpu),
+        ]:
+            print(f"[{name}]...", flush=True)
+            step()
+        print("[listening ports]...", flush=True)
+        rows, ports_seen = report_ports()
+        print("[http scan]... (Ctrl+C is safe - saves the partial report)",
+              flush=True)
+        report_scan(ports_seen)
+        section("what this tells us")
+        L.append("- GetSystemTimes / GlobalMemoryStatusEx OK  -> CPU/mem tiles work")
+        L.append("- nvidia-smi OK                             -> GPU util/power work")
+        L.append("- llama.cpp CLASS port                      -> token tracking works")
+        L.append("  (auto-discovery is designed from the netstat rows above)")
+        L.append("- Ollama CLASS                              -> needs /metrics check above")
+        L.append("- 'NOT USABLE' lines are the gaps TokenBoard's Windows support must fill")
+    except KeyboardInterrupt:
+        L.append("")
+        L.append("!! interrupted by Ctrl+C - above is the partial report")
+    text = "\n".join(L) + "\n"
     with open(out, "w", encoding="utf-8") as f:
         f.write(text)
     print(text)
     print(f"[written to {out}]")
+    if any("interrupted" in x for x in L):
+        sys.exit(1)
 
 
 if __name__ == "__main__":
