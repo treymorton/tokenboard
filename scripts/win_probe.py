@@ -387,7 +387,9 @@ def main():
         L.append("- nvidia-smi OK                             -> GPU util/power work")
         L.append("- llama.cpp CLASS port                      -> token tracking works")
         L.append("  (auto-discovery is designed from the netstat rows above)")
-        L.append("- Ollama CLASS                              -> needs /metrics check above")
+        L.append("- Ollama CLASS                              -> NO token counting is")
+        L.append("  possible (current Ollama exposes no cumulative counters); serve the")
+        L.append("  same GGUF through llama-server.exe --metrics - see README 'Windows'")
         L.append("- 'NOT USABLE' lines are the gaps TokenBoard's Windows support must fill")
     except KeyboardInterrupt:
         L.append("")

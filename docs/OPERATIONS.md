@@ -151,6 +151,10 @@ python tokenboard.py
 - **Store-Python** (WindowsApps path) works, but check `python --version` -
   the "python" stub that opens the Microsoft Store means Python isn't
   actually installed; use a python.org install for a tradeshow box.
+- **Ollama does no token counting** (no cumulative counters exposed;
+  `/metrics` absent in current builds - verified 0.40.16 + upstream source).
+  Serve the same GGUF blob through `llama-server --metrics` instead -
+  recipe in README "Windows".
 - **Firewall:** install.ps1 binds loopback (`bind_host`) so there's no
   prompt; `0.0.0.0` (LAN/hub visibility) triggers a one-time allow prompt.
 - Windows boxes push to a Linux hub via `hub_url` like any box; task tracker

@@ -36,8 +36,10 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1   # Windows (see "Windows
   prerequisite. TokenBoard reads the server's cumulative Prometheus
   counters, which are exact: what the API would bill. vLLM is preferred
   when both are up; llama-server is auto-discovered on any local port
-  (its ephemeral port doesn't need configuring). Ollama is supported for
-  model-presence display.
+  (its ephemeral port doesn't need configuring; on Windows it must run
+  with `--metrics`). **Ollama is not a token source** - current builds
+  expose no cumulative counters, so token accounting requires llama-server
+  (see the Windows section for reusing Ollama's already-downloaded models).
 - Internet is needed **only** for the optional price refresh at install time;
   a bundled price snapshot is used if the box is offline.
 
@@ -255,16 +257,27 @@ Backend capability on Windows (measured 2026-11-16 against Windows builds;
 
 | backend | tokens | requests | CPU/mem/GPU | note |
 |---|---|---|---|---|
-| llama-server.exe **with `--metrics`** | exact | yes | yes | recommended; auto-discovered when the process name contains `llama`, else set `llama_url` |
+| llama-server.exe **with `--metrics`** | exact | yes | yes | required for token counting; auto-discovered when the process name contains `llama`, else set `llama_url` |
 | llama-server.exe without `--metrics` | no | yes | yes | server answers `/metrics` with 501 + "Start it with `--metrics`" |
 | LM Studio local server | no | partial | yes | runs llama.cpp without metrics and doesn't expose the flag; `/metrics` returns that same 501 |
-| Ollama | version-dependent | yes | yes | needs a build that serves `/metrics` (older builds return 404 - upgrade Ollama) |
+| Ollama | **no** | no | yes | **currently no token counting at all**: Ollama exposes no cumulative counters (`/metrics` does not exist in current builds - checked against 0.40.16 runtime and upstream source). CPU/mem/GPU tiles still work; token accounting requires llama-server. |
 
-So: for exact token accounting on Windows, run the model through
-`llama-server.exe --metrics` (any llama.cpp release build; it can proxy the
-same GGUF models LM Studio/Ollama downloaded). Everything else - the
-dashboard, daily totals, frontier-cost savings, task tracker - works on all
-of them; only the token counters require metrics.
+**For token counting on Windows, run the model through `llama-server.exe --metrics`**
+(any llama.cpp release build - v1.0.0+). This includes Ollama users: keep
+Ollama installed, but point demo traffic at llama-server. You can serve the
+same model Ollama already downloaded:
+
+1. `ollama stop <model>` to free VRAM
+2. find the model's GGUF blob (the large file) under
+   `~\.ollama\models\blobs\` - first 4 bytes read `GGUF`
+3. hardlink it: `New-Item -ItemType HardLink -Path model.gguf -Target <blob>`
+4. `llama-server.exe -m model.gguf --port 8080 --metrics -ngl 99 --jinja`
+5. TokenBoard auto-discovers it within ~30 s; send chat requests to
+   `http://127.0.0.1:8080/v1` (llama-server is a separate server from
+   Ollama - requests to `:11434` still count nothing)
+6. counters start at zero when llama-server starts; the box cumulative
+   continues seamlessly (reset-aware), and everything else - dashboard,
+   daily totals, frontier-cost savings, task tracker - works unchanged.
 
 ## Autostart & operations
 
